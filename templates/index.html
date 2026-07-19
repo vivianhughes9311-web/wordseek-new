@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#09090b">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="A premium, instant WordSeek solver. Paste any 4 or 5 letter board — the mode is detected and the strongest guesses are ranked automatically.">
+
+  <title>WordSeek — Instant Solver</title>
+
+  <!-- SVG favicon (crisp on every device) -->
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="apple-touch-icon" href="/static/favicon.svg">
+
+  <!-- Fonts: Inter for UI, JetBrains Mono for the board + guesses -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- ============================================================= -->
+  <!-- Ambient background: aurora blobs, particles, grid, noise      -->
+  <!-- ============================================================= -->
+  <div class="backdrop" aria-hidden="true">
+    <div class="aurora">
+      <span class="blob blob-violet"></span>
+      <span class="blob blob-blue"></span>
+      <span class="blob blob-cyan"></span>
+      <span class="blob blob-pink"></span>
+    </div>
+    <canvas id="particles" class="particles"></canvas>
+    <div class="grid-overlay"></div>
+    <div class="noise"></div>
+    <div class="vignette"></div>
+  </div>
+
+  <!-- Confetti fires when the board narrows to a single answer -->
+  <canvas id="confetti" class="confetti" aria-hidden="true"></canvas>
+
+  <div class="page">
+    <!-- ================= Top bar ================= -->
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="WordSeek home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 64 64" class="brand-logo">
+            <defs>
+              <linearGradient id="markGrad" x1="8" y1="12" x2="56" y2="52" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#22d3ee"/>
+                <stop offset="0.5" stop-color="#7c5cff"/>
+                <stop offset="1" stop-color="#ff5c8a"/>
+              </linearGradient>
+            </defs>
+            <rect x="2" y="2" width="60" height="60" rx="15" class="brand-plate"/>
+            <path d="M13 19 L21.5 45 L32 26 L42.5 45 L51 19" class="brand-stroke" pathLength="100"/>
+          </svg>
+        </span>
+        <span class="brand-text">
+          <span class="brand-name">WordSeek</span>
+          <span class="brand-sub">Auto Solver</span>
+        </span>
+      </a>
+
+      <div class="topbar-actions">
+        <span class="live-badge" title="Solving happens the instant you paste">
+          <i></i> LIVE ENGINE
+        </span>
+        <button id="shortcutsBtn" class="chip-btn" type="button" aria-haspopup="dialog" aria-controls="shortcutsModal">
+          <kbd>/</kbd> Shortcuts
+        </button>
+      </div>
+    </header>
+
+    <!-- ================= Main ================= -->
+    <main class="layout">
+      <section class="hero">
+        <span class="eyebrow"><i></i> INSTANT · PRIVATE · NO LOGIN</span>
+        <h1 class="hero-title">
+          Find the best word.
+          <span class="gradient-text">Instantly.</span>
+        </h1>
+        <p class="hero-sub">
+          Paste your WordSeek board and the engine detects the mode, filters every
+          possibility, and ranks the strongest guesses — no button, no wait.
+        </p>
+        <div class="hero-stats" aria-hidden="true">
+          <span class="stat"><b id="statWords">20,927</b><small>words indexed</small></span>
+          <span class="stat-sep"></span>
+          <span class="stat"><b>4 &amp; 5</b><small>letter modes</small></span>
+          <span class="stat-sep"></span>
+          <span class="stat"><b>&lt;100<em>ms</em></b><small>typical solve</small></span>
+        </div>
+      </section>
+
+      <div class="workspace">
+        <!-- ---------- Solver card ---------- -->
+        <section class="solver card" aria-labelledby="solverHeading">
+          <span class="card-glow" aria-hidden="true"></span>
+
+          <div class="card-head">
+            <div>
+              <span class="section-eyebrow">BOARD INPUT</span>
+              <h2 id="solverHeading" class="card-title">Paste your game board</h2>
+            </div>
+            <div id="modeBadge" class="mode-badge" title="Detected automatically" aria-live="polite">
+              <span class="mode-dot"></span><span class="mode-label">AUTO</span>
+            </div>
+          </div>
+
+          <!-- Textarea with animated focus glow + scan line -->
+          <div class="input-wrap" id="inputWrap">
+            <div class="input-border" aria-hidden="true"></div>
+            <label class="visually-hidden" for="board">WordSeek board input</label>
+            <textarea
+              id="board"
+              spellcheck="false"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              rows="8"
+              aria-describedby="inputHint"
+              placeholder="Paste your board here…&#10;&#10;crane 🟥🟨🟥🟩🟥&#10;slate 🟩🟥🟨🟥🟥"></textarea>
+            <div class="scan-line" aria-hidden="true"></div>
+
+            <div class="input-footer">
+              <span id="inputHint" class="input-hint">
+                Supports 4 &amp; 5 letter boards · <kbd>⌘</kbd><kbd>V</kbd> to paste
+              </span>
+              <button id="clearBtn" class="ghost-btn" type="button" aria-label="Clear the board">
+                Clear
+              </button>
+            </div>
+          </div>
+
+          <!-- Results header -->
+          <div class="results-head">
+            <div class="status-wrap">
+              <span id="statusDot" class="status-dot"></span>
+              <span id="status" class="status-text">Waiting for a board…</span>
+            </div>
+            <span class="hint-inline">Click any guess to copy · ★ to save</span>
+          </div>
+
+          <!-- Skeleton loading (Linear / Vercel style shimmer) -->
+          <div id="skeleton" class="skeleton" aria-hidden="true">
+            <div class="sk-hero shimmer"></div>
+            <div class="sk-grid">
+              <span class="shimmer"></span><span class="shimmer"></span>
+              <span class="shimmer"></span><span class="shimmer"></span>
+              <span class="shimmer"></span><span class="shimmer"></span>
+            </div>
+          </div>
+
+          <!-- Best guess spotlight -->
+          <div id="bestWrap" class="best-wrap" hidden>
+            <div class="best-card" tabindex="0" role="button" aria-label="Copy best guess">
+              <span class="best-glow" aria-hidden="true"></span>
+              <div class="best-meta">
+                <span class="best-tag">BEST GUESS</span>
+                <button class="fav-btn best-fav" type="button" aria-label="Save to favorites" data-word="">
+                  <svg viewBox="0 0 24 24" class="star"><path d="M12 2.5l2.9 6.06 6.6.79-4.9 4.55 1.3 6.6L12 17.9 6.1 21.1l1.3-6.6L2.5 9.35l6.6-.79z"/></svg>
+                </button>
+              </div>
+              <span id="bestWord" class="best-word">—</span>
+              <div class="best-foot">
+                <div class="confidence">
+                  <div class="confidence-track"><span id="bestBar" class="confidence-fill"></span></div>
+                  <span id="bestPct" class="confidence-pct">100%</span>
+                </div>
+                <span class="best-copy-hint"><kbd>Enter</kbd> to copy</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Remaining ranked guesses -->
+          <div id="guesses" class="guesses" role="list" aria-live="polite" aria-label="Ranked guesses"></div>
+
+          <!-- Empty / no-result states -->
+          <div id="emptyState" class="empty-state">
+            <div class="empty-illus" aria-hidden="true">
+              <span></span><span></span><span></span>
+              <span></span><span></span><span></span>
+              <span></span><span></span><span></span>
+            </div>
+            <p class="empty-title">Your ranked guesses will appear here</p>
+            <p class="empty-sub">Paste a board above to begin — results are instant.</p>
+          </div>
+        </section>
+
+        <!-- ---------- Side panel: history + favorites ---------- -->
+        <aside class="panel card" aria-label="History and favorites">
+          <div class="panel-tabs" role="tablist" aria-label="Saved data">
+            <button id="tabHistory" class="tab active" role="tab" aria-selected="true" aria-controls="historyView" type="button">
+              Recent
+            </button>
+            <button id="tabFavorites" class="tab" role="tab" aria-selected="false" aria-controls="favoritesView" type="button">
+              Favorites
+            </button>
+            <span class="tab-indicator" aria-hidden="true"></span>
+          </div>
+
+          <!-- Recent boards -->
+          <div id="historyView" class="panel-view" role="tabpanel" aria-labelledby="tabHistory">
+            <div id="historyList" class="panel-list"></div>
+            <div id="historyEmpty" class="panel-empty">
+              <span class="panel-empty-icon" aria-hidden="true">◵</span>
+              <p>No recent boards yet.</p>
+              <small>Solved boards are saved here, on this device only.</small>
+            </div>
+            <button id="clearHistory" class="panel-clear ghost-btn" type="button" hidden>Clear history</button>
+          </div>
+
+          <!-- Favorite guesses -->
+          <div id="favoritesView" class="panel-view" role="tabpanel" aria-labelledby="tabFavorites" hidden>
+            <div id="favoritesList" class="panel-list favorites-list"></div>
+            <div id="favoritesEmpty" class="panel-empty">
+              <span class="panel-empty-icon" aria-hidden="true">★</span>
+              <p>No favorites yet.</p>
+              <small>Tap the star on any guess to keep it here.</small>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <span>Fast · Private · No login</span>
+      <span class="footer-dot" aria-hidden="true"></span>
+      <span>Built for WordSeek</span>
+    </footer>
+  </div>
+
+  <!-- ================= Shortcuts modal ================= -->
+  <div id="shortcutsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="shortcutsTitle" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card card">
+      <div class="modal-head">
+        <h3 id="shortcutsTitle">Keyboard shortcuts</h3>
+        <button class="ghost-btn modal-close" type="button" data-close aria-label="Close">✕</button>
+      </div>
+      <ul class="shortcut-list">
+        <li><span>Focus the board</span><span class="keys"><kbd>/</kbd></span></li>
+        <li><span>Clear the board</span><span class="keys"><kbd>Esc</kbd></span></li>
+        <li><span>Copy the best guess</span><span class="keys"><kbd>Enter</kbd></span></li>
+        <li><span>Move between guesses</span><span class="keys"><kbd>←</kbd><kbd>→</kbd></span></li>
+        <li><span>Copy a focused guess</span><span class="keys"><kbd>Space</kbd></span></li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Toast stack -->
+  <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+
+  <script src="/static/script.js" defer></script>
+</body>
+</html>
