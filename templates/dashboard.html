@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f4f1ff">
   <meta name="color-scheme" content="light">
-  <meta name="description" content="WordSeek Telegram monitor dashboard.">
+  <meta name="description" content="WordSeek Telegram autoplay dashboard.">
   <meta name="csrf" content="{{ csrf_token }}">
-  <title>WordSeek — Telegram Dashboard</title>
+  <title>WordSeek — Autoplay Dashboard</title>
 
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -18,10 +18,8 @@
 </head>
 <body>
   <div class="bg" aria-hidden="true">
-    <span class="blob blob-lav"></span>
-    <span class="blob blob-sky"></span>
-    <span class="blob blob-mint"></span>
-    <span class="blob blob-peach"></span>
+    <span class="blob blob-lav"></span><span class="blob blob-sky"></span>
+    <span class="blob blob-mint"></span><span class="blob blob-peach"></span>
   </div>
 
   <div class="page dash">
@@ -38,43 +36,77 @@
             <circle cx="13.5" cy="30" r="2.4" fill="#ff9ec4" opacity=".55"/><circle cx="34.5" cy="30" r="2.4" fill="#ff9ec4" opacity=".55"/>
           </svg>
         </span>
-        <span class="brand-text">
-          <span class="brand-name">WordSeek</span>
-          <span class="brand-sub">telegram monitor</span>
-        </span>
+        <span class="brand-text"><span class="brand-name">WordSeek</span><span class="brand-sub">autoplay</span></span>
       </a>
       <div class="topbar-actions">
         <span id="connPill" class="pill pill-idle"><i></i> <span id="connPillText">Loading…</span></span>
         <a class="chip-btn" href="/">🐼 Solver</a>
-        <a class="chip-btn" href="/logout">Log out</a>
       </div>
     </header>
 
-    {% if not tg_available %}
+    {% if not tg_configured %}
       <div class="notice card">
-        <b>Telegram support is not active.</b> The web app and solver work normally, but the
-        monitor needs Telethon installed and the Telegram environment variables configured.
-        See the README for setup.
+        <b>Telegram login isn't configured on this server yet.</b>
+        The operator must set <code>TELEGRAM_API_ID</code> and <code>TELEGRAM_API_HASH</code>
+        (from <span class="mono">my.telegram.org</span>). Until then, only the solver works.
       </div>
     {% endif %}
 
-    <main class="dash-grid">
-      <!-- Connection -->
-      <section class="card dash-card">
-        <div class="dash-card-head"><h2>🔌 Connection</h2><span id="modeTag" class="tag">—</span></div>
-        <dl class="kv">
-          <div><dt>Status</dt><dd id="kvStatus">—</dd></div>
-          <div><dt>Account</dt><dd id="kvAccount">—</dd></div>
-          <div><dt>Reconnect</dt><dd id="kvReconnect">idle</dd></div>
-        </dl>
-        <div class="btn-row">
-          <button class="btn btn-primary" data-action="connect">Connect</button>
-          <button class="btn" data-action="disconnect">Disconnect</button>
-          <button class="btn" id="pauseBtn" data-action="pause">Pause</button>
+    <!-- ================= Connect (Login with Telegram) ================= -->
+    <section id="connectCard" class="card connect-card" hidden>
+      <div class="dash-card-head"><h2>🔐 Log in with Telegram</h2></div>
+
+      <p class="consent">
+        You're signing in to <b>your own</b> Telegram account so the app can play in your
+        groups. Your session is stored <b>encrypted</b> on the server and never shown in the
+        browser. Automating a game bot can violate Telegram / bot rules and may get accounts
+        limited — use sensible delays and only in groups where it's allowed.
+      </p>
+
+      <!-- step: phone -->
+      <div id="stepPhone" class="login-step">
+        <label class="fld-label" for="phoneInput">Phone number (international format)</label>
+        <div class="field-inline">
+          <input id="phoneInput" class="txt" type="tel" inputmode="tel" placeholder="+15551234567" autocomplete="tel">
+          <button class="btn btn-primary" id="sendCodeBtn">Send code</button>
         </div>
+      </div>
+
+      <!-- step: code -->
+      <div id="stepCode" class="login-step" hidden>
+        <label class="fld-label" for="codeInput">Enter the code Telegram sent you</label>
+        <div class="field-inline">
+          <input id="codeInput" class="txt" type="text" inputmode="numeric" placeholder="12345" autocomplete="one-time-code">
+          <button class="btn btn-primary" id="signInBtn">Verify</button>
+          <button class="btn" id="restartBtn" type="button">Restart</button>
+        </div>
+      </div>
+
+      <!-- step: 2fa -->
+      <div id="stepPassword" class="login-step" hidden>
+        <label class="fld-label" for="passwordInput">Two-step (2FA) password</label>
+        <div class="field-inline">
+          <input id="passwordInput" class="txt" type="password" placeholder="Your Telegram password" autocomplete="current-password">
+          <button class="btn btn-primary" id="passwordBtn">Confirm</button>
+        </div>
+      </div>
+
+      <p id="loginMsg" class="login-msg" role="alert" hidden></p>
+    </section>
+
+    <!-- ================= Main dashboard (shown when connected) ================= -->
+    <main id="mainGrid" class="dash-grid" hidden>
+      <!-- Account -->
+      <section class="card dash-card">
+        <div class="dash-card-head"><h2>👤 Account</h2></div>
+        <dl class="kv">
+          <div><dt>Signed in as</dt><dd id="kvAccount">—</dd></div>
+          <div><dt>Phone</dt><dd id="kvPhone" class="mono">—</dd></div>
+        </dl>
+        <div class="btn-row"><button class="btn" id="logoutTgBtn">Log out of Telegram</button></div>
       </section>
 
-      <!-- Group selection -->
+      <!-- Group -->
       <section class="card dash-card">
         <div class="dash-card-head"><h2>👥 Target group</h2></div>
         <dl class="kv">
@@ -82,9 +114,7 @@
           <div><dt>Group ID</dt><dd id="kvGroupId" class="mono">—</dd></div>
         </dl>
         <div class="field-row">
-          <select id="groupSelect" class="select" aria-label="Available groups">
-            <option value="">Load your groups…</option>
-          </select>
+          <select id="groupSelect" class="select"><option value="">Load your groups…</option></select>
         </div>
         <div class="btn-row">
           <button class="btn" id="loadGroupsBtn">Load groups</button>
@@ -92,70 +122,83 @@
         </div>
       </section>
 
-      <!-- Auto-send -->
-      <section class="card dash-card">
-        <div class="dash-card-head"><h2>⚡ Auto-send</h2>
-          <label class="switch" title="Toggle auto-send">
-            <input type="checkbox" id="autoSendToggle"><span class="slider"></span>
-          </label>
+      <!-- Autoplay state -->
+      <section class="card dash-card ap-state">
+        <div class="dash-card-head"><h2>🤖 Autoplay</h2>
+          <label class="switch" title="Autoplay ON/OFF"><input type="checkbox" id="apEnabled"><span class="slider"></span></label>
         </div>
-        <p class="muted small">When ON, the best guess is sent to the group automatically — once per board, with a delay and cooldown.</p>
+        <div class="state-badge" id="apStateBadge">IDLE</div>
+        <div class="metrics ap-metrics">
+          <div class="metric"><b id="apGame">—</b><small>game #</small></div>
+          <div class="metric"><b id="apGuessNo">—</b><small>guess</small></div>
+          <div class="metric"><b id="apMode">—</b><small>mode</small></div>
+          <div class="metric"><b id="apSince">—</b><small>since update</small></div>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="apStartBtn">Start</button>
+          <button class="btn" id="apPauseBtn">Pause</button>
+          <button class="btn btn-danger" id="apStopBtn">Emergency stop</button>
+        </div>
+      </section>
+
+      <!-- Autoplay config -->
+      <section class="card dash-card ap-config">
+        <div class="dash-card-head"><h2>⚙️ Autoplay settings</h2></div>
+        <div class="cfg-grid">
+          <label>Max guesses / game <input class="num" type="number" id="cfgMax" min="1" max="20"></label>
+          <label>Delay (ms) <input class="num" type="number" id="cfgDelay" min="0" max="60000" step="100"></label>
+          <label>Cooldown (ms) <input class="num" type="number" id="cfgCooldown" min="0" max="120000" step="100"></label>
+          <label>Min confidence (%) <input class="num" type="number" id="cfgConf" min="0" max="100"></label>
+          <label>Stop after N repeats <input class="num" type="number" id="cfgRepeat" min="2" max="20"></label>
+        </div>
+        <div class="cfg-checks">
+          <label class="chk"><input type="checkbox" id="cfgAutoStart"> Auto-start on new game</label>
+          <label class="chk"><input type="checkbox" id="cfgAutoStop"> Auto-stop after win/loss</label>
+          <label class="chk"><input type="checkbox" id="cfgSendCmd"> Send new-game command after a round</label>
+        </div>
         <div class="field-inline">
-          <label for="delayInput">Delay</label>
-          <input id="delayInput" class="num" type="number" min="0" max="60000" step="100"> <span class="muted">ms</span>
+          <label for="cfgCmd" class="muted small">New-game command</label>
+          <input id="cfgCmd" class="txt small-txt" type="text" placeholder="/new">
         </div>
-        <dl class="kv">
-          <div><dt>Cooldown</dt><dd id="kvCooldown">—</dd></div>
-          <div><dt>Last sent</dt><dd id="kvLastSent">none</dd></div>
-        </dl>
+        <div class="btn-row"><button class="btn btn-primary" id="cfgSaveBtn">Save settings</button></div>
       </section>
 
       <!-- Latest board -->
       <section class="card dash-card">
         <div class="dash-card-head"><h2>🧩 Latest board</h2><span id="boardMode" class="tag">—</span></div>
-        <pre id="latestBoard" class="board-view" aria-live="polite">Waiting for a board…</pre>
-        <p class="muted small">Last message: <span id="lastMsgTs">—</span></p>
+        <pre id="latestBoard" class="board-view">Waiting for a board…</pre>
+        <p class="muted small">Last message: <span id="lastMsgTs">—</span> · Solver: <span id="solveTime">—</span></p>
       </section>
 
-      <!-- Solver result + manual send -->
+      <!-- Result + manual send -->
       <section class="card dash-card wide">
-        <div class="dash-card-head"><h2>🏆 Best guess &amp; manual send</h2><span id="solveTime" class="tag">—</span></div>
-        <div id="resultBox" class="result-box">
-          <div class="best-line">
-            <span id="bestGuess" class="best-guess">—</span>
-            <div class="best-actions">
-              <button class="btn btn-primary" id="sendBestBtn" disabled>Send best guess</button>
-              <button class="btn" id="copyBestBtn" disabled>Copy</button>
-            </div>
-          </div>
-          <div class="conf">
-            <div class="conf-track"><span id="confFill" class="conf-fill"></span></div>
-            <span id="confPct" class="conf-pct">—</span>
-            <span id="candCount" class="muted small"></span>
-          </div>
-          <div id="topGuesses" class="chips"></div>
-          <p class="muted small">Tap a guess to send it to the group · long results are copy-safe.</p>
+        <div class="dash-card-head"><h2>🏆 Guess &amp; manual send</h2>
+          <label class="switch small" title="Simple auto-send (one guess per board)">
+            <input type="checkbox" id="autoSendToggle"><span class="slider"></span>
+          </label>
         </div>
+        <div class="best-line">
+          <span id="bestGuess" class="best-guess">—</span>
+          <div class="best-actions">
+            <button class="btn btn-primary" id="sendBestBtn" disabled>Send best</button>
+            <button class="btn" id="copyBestBtn" disabled>Copy</button>
+          </div>
+        </div>
+        <div class="conf">
+          <div class="conf-track"><span id="confFill" class="conf-fill"></span></div>
+          <span id="confPct" class="conf-pct">—</span><span id="candCount" class="muted small"></span>
+        </div>
+        <div id="topGuesses" class="chips"></div>
+        <p class="muted small">Next autoplay pick: <b id="nextGuess">—</b> · toggle above = simple one-shot auto-send.</p>
       </section>
 
-      <!-- Metrics -->
+      <!-- Timeline -->
       <section class="card dash-card">
-        <div class="dash-card-head"><h2>📊 Live metrics</h2></div>
-        <div class="metrics">
-          <div class="metric"><b id="mMonitor">—</b><small>monitoring</small></div>
-          <div class="metric"><b id="mSolve">—</b><small>solve time</small></div>
-          <div class="metric"><b id="mCooldown">—</b><small>cooldown</small></div>
-          <div class="metric"><b id="mReconnect">—</b><small>reconnect</small></div>
-        </div>
-      </section>
-
-      <!-- Activity log -->
-      <section class="card dash-card">
-        <div class="dash-card-head"><h2>📜 Activity</h2></div>
+        <div class="dash-card-head"><h2>📜 Activity timeline</h2></div>
         <ul id="activityLog" class="log"></ul>
       </section>
 
-      <!-- Error log -->
+      <!-- Errors -->
       <section class="card dash-card">
         <div class="dash-card-head"><h2>🚨 Errors</h2></div>
         <ul id="errorLog" class="log log-error"></ul>
@@ -163,9 +206,8 @@
     </main>
 
     <footer class="site-footer">
-      <span>Made with 🐼 &amp; care</span>
-      <span class="footer-dot" aria-hidden="true"></span>
-      <span>Monitoring runs on the server, not your browser</span>
+      <span>Made with 🐼 &amp; care</span><span class="footer-dot" aria-hidden="true"></span>
+      <span>Autoplay runs on the server · event-driven</span>
     </footer>
   </div>
 

@@ -1,9 +1,12 @@
-"""Lightweight auth, CSRF and rate-limiting for the dashboard control plane.
+"""Identity, optional access gate, CSRF and rate limiting.
 
-- Password comes from the DASHBOARD_PASSWORD env var (never hardcoded).
-- Login state is kept in Flask's signed session cookie.
-- CSRF: a per-session token must accompany every state-changing POST.
-- Rate limiting: simple in-memory sliding window per (ip, endpoint).
+Identity: every visitor gets a signed `uid` in their session cookie — this is
+their account handle (each uid maps to one Telegram login).
+
+Access gate: OPTIONAL. If DASHBOARD_PASSWORD is set, the whole dashboard sits
+behind that shared password (useful for a private instance). If it is NOT set,
+the dashboard is open and the only login is "Login with Telegram" — so no scary
+password warning when it is unset.
 """
 import functools
 import hmac
@@ -14,37 +17,50 @@ from collections import defaultdict, deque
 
 from flask import jsonify, redirect, request, session, url_for
 
-DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
-
+ACCESS_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 _hits = defaultdict(deque)
 
 
-def password_configured() -> bool:
-    return bool(DASHBOARD_PASSWORD)
+# --- identity ---------------------------------------------------------------
+def ensure_uid() -> str:
+    uid = session.get("uid")
+    if not uid:
+        uid = secrets.token_urlsafe(18)
+        session["uid"] = uid
+        session.permanent = True
+    return uid
+
+
+def current_uid() -> str:
+    return session.get("uid") or ensure_uid()
+
+
+# --- optional access gate ---------------------------------------------------
+def gate_enabled() -> bool:
+    return bool(ACCESS_PASSWORD)
+
+
+def gate_ok() -> bool:
+    return (not gate_enabled()) or (session.get("gate_ok") is True)
 
 
 def check_password(candidate: str) -> bool:
-    if not DASHBOARD_PASSWORD:
+    if not ACCESS_PASSWORD:
         return False
-    return hmac.compare_digest(str(candidate), DASHBOARD_PASSWORD)
+    return hmac.compare_digest(str(candidate), ACCESS_PASSWORD)
 
 
-def login_user():
-    session["auth"] = True
+def open_gate():
+    session["gate_ok"] = True
     session.permanent = True
-    # rotate CSRF token on login
     session["csrf"] = secrets.token_urlsafe(32)
 
 
-def logout_user():
-    session.pop("auth", None)
-    session.pop("csrf", None)
+def close_gate():
+    session.pop("gate_ok", None)
 
 
-def is_authed() -> bool:
-    return session.get("auth") is True
-
-
+# --- CSRF -------------------------------------------------------------------
 def get_csrf_token() -> str:
     token = session.get("csrf")
     if not token:
@@ -64,12 +80,14 @@ def _valid_csrf() -> bool:
     return bool(sent) and hmac.compare_digest(str(sent), str(expected))
 
 
-def login_required(fn):
+# --- decorators -------------------------------------------------------------
+def access_required(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        if not is_authed():
+        ensure_uid()
+        if not gate_ok():
             if request.path.startswith("/api/"):
-                return jsonify({"error": "Authentication required."}), 401
+                return jsonify({"error": "Access locked."}), 401
             return redirect(url_for("login", next=request.path))
         return fn(*args, **kwargs)
 

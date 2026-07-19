@@ -6,6 +6,9 @@
 
 .page.dash { gap: 22px; }
 
+/* the [hidden] attribute must always win, even over display:grid/flex elements */
+[hidden] { display: none !important; }
+
 /* ---- login ---- */
 .login-wrap { min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
 .login-card {
@@ -169,6 +172,54 @@
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 
+/* ---- connect / login-with-telegram ---- */
+.connect-card { padding: 24px; max-width: 620px; margin: 0 auto; width: 100%; }
+.consent {
+  font-size: 12.5px; line-height: 1.55; color: var(--ink-soft);
+  background: rgba(255,215,106,.14); border: 1px solid rgba(255,215,106,.3);
+  border-radius: 14px; padding: 12px 14px; margin: 0 0 18px;
+}
+.consent b { color: var(--ink); }
+.login-step { margin-bottom: 6px; }
+.fld-label { display: block; font-size: 13px; color: var(--ink-soft); margin-bottom: 8px; font-weight: 600; }
+.txt {
+  flex: 1; min-width: 0; height: 44px; padding: 0 14px; border-radius: 13px;
+  border: 2px solid var(--line); background: #fff; font-size: 15px; outline: 0;
+  transition: border-color .2s var(--ease), box-shadow .2s var(--ease);
+}
+.txt:focus { border-color: var(--sky); box-shadow: 0 0 0 4px rgba(124,199,255,.16); }
+.small-txt { height: 38px; max-width: 160px; }
+.login-msg { margin: 14px 0 0; padding: 10px 14px; border-radius: 12px; font-size: 13px; font-weight: 600; }
+.login-msg.err { background: rgba(255,158,196,.16); color: #d2557f; }
+.login-msg.ok  { background: rgba(94,224,176,.16); color: #1eb381; }
+
+/* ---- autoplay panel ---- */
+.state-badge {
+  display: inline-block; padding: 8px 16px; border-radius: 12px; margin-bottom: 14px;
+  font-weight: 700; font-size: 15px; letter-spacing: .04em;
+  background: rgba(167,139,250,.14); color: var(--lav);
+}
+.state-badge.run  { background: rgba(94,224,176,.16); color: #1eb381; }
+.state-badge.wait { background: rgba(124,199,255,.16); color: #3a97e8; }
+.state-badge.won  { background: rgba(94,224,176,.2); color: #159c70; }
+.state-badge.lost, .state-badge.err { background: rgba(255,158,196,.18); color: #d2557f; }
+.state-badge.paused { background: rgba(255,215,106,.2); color: #b8862f; }
+.ap-metrics { margin-bottom: 14px; }
+.metrics.ap-metrics { grid-template-columns: repeat(4, 1fr); }
+.btn-danger { background: linear-gradient(140deg,#ff9ec4,#ffb59e); color: #6b2338; border-color: transparent; }
+.switch.small { width: 44px; height: 25px; }
+.switch.small .slider::before { height: 19px; width: 19px; }
+.switch.small input:checked + .slider::before { transform: translateX(19px); }
+
+/* ---- config grid ---- */
+.cfg-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 16px; }
+.cfg-grid label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--ink-soft); font-weight: 600; }
+.cfg-grid .num { width: 100%; }
+.cfg-checks { display: flex; flex-direction: column; gap: 10px; margin: 16px 0 12px; }
+.chk { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-soft); cursor: pointer; }
+.chk input { width: 18px; height: 18px; accent-color: var(--lav); }
+.state-badge, .metric b { font-variant-numeric: tabular-nums; }
+
 /* ---- responsive ---- */
 @media (max-width: 900px) {
   .dash-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
@@ -177,6 +228,9 @@
 @media (max-width: 620px) {
   .dash-grid { grid-template-columns: 1fr; }
   .dash-card.wide { grid-column: span 1; }
+  .metrics.ap-metrics { grid-template-columns: repeat(2, 1fr); }
+  .cfg-grid { grid-template-columns: 1fr; }
   #connPill .pill, .pill { height: 34px; }
   .brand-sub { display: none; }
+  .field-inline { flex-wrap: wrap; }
 }

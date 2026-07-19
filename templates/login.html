@@ -35,18 +35,15 @@
         </svg>
       </div>
       <h1 class="login-title">Dashboard access</h1>
-      <p class="login-sub">Enter the dashboard password to control the Telegram monitor.</p>
+      <p class="login-sub">This instance is protected. Enter the access password to continue, then log in with your Telegram account.</p>
 
-      {% if not password_set %}
-        <p class="login-warn">⚠️ No <code>DASHBOARD_PASSWORD</code> is set on the server. Set it in your environment variables to enable access.</p>
-      {% endif %}
       {% if error %}
         <p class="login-error" role="alert">{{ error }}</p>
       {% endif %}
 
-      <label class="visually-hidden" for="password">Dashboard password</label>
-      <input id="password" class="login-input" type="password" name="password" placeholder="Password" autocomplete="current-password" autofocus {{ 'disabled' if not password_set }}>
-      <button class="login-btn" type="submit" {{ 'disabled' if not password_set }}>Unlock dashboard</button>
+      <label class="visually-hidden" for="password">Access password</label>
+      <input id="password" class="login-input" type="password" name="password" placeholder="Access password" autocomplete="current-password" autofocus>
+      <button class="login-btn" type="submit">Continue</button>
 
       <a class="login-back" href="/">← Back to the solver</a>
     </form>
