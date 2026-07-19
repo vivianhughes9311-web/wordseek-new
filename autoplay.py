@@ -13,6 +13,7 @@ The engine never touches Telegram directly — the owning service injects:
   loop            -> the asyncio loop the engine runs on
 """
 import asyncio
+import re
 import time
 
 from board import detect_board, detect_mode
@@ -74,6 +75,7 @@ class AutoplayEngine:
         self.last_update_ts = None
         self.result_word = None
         self.result_seconds = None
+        self.game_limit = None
 
         self.sent_keys = set()
         self._pending_key = None
@@ -153,22 +155,32 @@ class AutoplayEngine:
         rows = d["rows"] if d else []
         board_key = d["key"] if d else None
         mode = (d["mode"] if d else None) or detect_mode(text)
+        low = text.lower()
+
         is_win = False
         win_word = None
+        # 1) an all-green final row (some variants render this)
         if rows:
             guess, tiles = rows[-1]
             if tiles and all(t == GREEN for t in tiles):
                 is_win = True
                 win_word = guess
-        low = text.lower()
+        # 2) a win keyword ("Congrats! …")
         if any(k in low for k in WIN_WORDS):
             is_win = True
+        # 3) the answer announced as "Correct Word: xxxxx" (WordSeek's format)
+        m_word = re.search(r"correct word[^a-z]*([a-z]+)", low)
+        if m_word:
+            is_win = True
+            win_word = m_word.group(1)
+
+        # attempt counter like "1/30" -> the game's own guess limit
+        m_lim = re.search(r"\b(\d{1,3})\s*/\s*(\d{1,3})\b", text)
+        limit = int(m_lim.group(2)) if m_lim else None
+
         return {
-            "rows": rows,
-            "board_key": board_key,
-            "mode": mode,
-            "is_win": is_win,
-            "win_word": win_word,
+            "rows": rows, "board_key": board_key, "mode": mode,
+            "is_win": is_win, "win_word": win_word, "limit": limit,
             "is_loss": any(k in low for k in LOSS_WORDS),
             "is_new_game": any(k in low for k in NEW_GAME_WORDS),
         }
@@ -229,8 +241,13 @@ class AutoplayEngine:
             by_us = bool(cls["win_word"] and self.last_guess and cls["win_word"].lower() == self.last_guess.lower())
             self._win(cls, by_us)
             return self._maybe_new_game_command()
-        if cls["is_loss"] or (rowcount and rowcount >= int(self.config.get("max_guesses", 6)) and not cls["is_win"]):
-            self._loss("Board reached the attempt limit" if rowcount else "Game ended")
+        # The board is SHARED across players, so rowcount counts everyone's
+        # guesses. Only the game's OWN limit (from "N/30") should end the game —
+        # not this user's personal per-game cap.
+        game_limit = cls.get("limit") or int(self.config.get("max_guesses", 30))
+        self.game_limit = game_limit
+        if cls["is_loss"] or (rowcount and rowcount >= game_limit and not cls["is_win"]):
+            self._loss("Reached the game's attempt limit" if rowcount else "Game ended")
             return self._maybe_new_game_command()
 
         # --- board de-dupe / confirmed-update gate ---
@@ -255,9 +272,13 @@ class AutoplayEngine:
         if sent_key in self.sent_keys or self._pending_key == sent_key:
             return None
 
-        if self.guess_number >= int(self.config.get("max_guesses", 6)):
-            self._loss("Reached maximum guesses")
-            return self._maybe_new_game_command()
+        # personal per-game send cap: stop sending (game may continue / others
+        # may still win) — do NOT declare a loss.
+        if self.guess_number >= int(self.config.get("max_guesses", 30)):
+            if self.state != WAITING_FOR_UPDATE:
+                self._timeline("system", "Reached your per-game guess limit — not sending more")
+            self.state = WAITING_FOR_UPDATE
+            return None
 
         # --- solve (recomputes from ALL feedback in the board) ---
         self.state = SOLVING
@@ -421,7 +442,7 @@ class AutoplayEngine:
             "game_id": self.game_id,
             "mode": self.mode,
             "guess_number": self.guess_number,
-            "max_guesses": int(self.config.get("max_guesses", 6)),
+            "max_guesses": int(self.config.get("max_guesses", 30)),
             "last_guess": (self.last_guess or "").upper() or None,
             "next_guess": (self.next_guess or "").upper() or None,
             "candidate_count": self.candidate_count,
@@ -433,7 +454,7 @@ class AutoplayEngine:
             "timeline": self.timeline[-14:][::-1],
             "config": {
                 "enabled": bool(self.config.get("enabled")),
-                "max_guesses": int(self.config.get("max_guesses", 6)),
+                "max_guesses": int(self.config.get("max_guesses", 30)),
                 "delay_ms": int(self.config.get("delay_ms", 1500)),
                 "cooldown_ms": int(self.config.get("cooldown_ms", 4000)),
                 "min_confidence": int(self.config.get("min_confidence", 0)),

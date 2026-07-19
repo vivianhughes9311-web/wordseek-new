@@ -24,7 +24,7 @@ MAX_ACTIVITY = 60
 
 DEFAULT_AUTOPLAY = {
     "enabled": False,          # Autoplay ON/OFF (master feature flag)
-    "max_guesses": 6,          # attempt limit per game
+    "max_guesses": 30,         # personal per-game send cap (WordSeek allows /30)
     "delay_ms": 1500,          # delay before each guess
     "cooldown_ms": 4000,       # strict min gap between guesses
     "min_confidence": 0,       # 0..100; skip auto-send below this

@@ -520,7 +520,7 @@ async def _wrap(fn):
 
 def _sanitize_config(clean):
     if "max_guesses" in clean:
-        clean["max_guesses"] = max(1, min(20, int(clean["max_guesses"])))
+        clean["max_guesses"] = max(1, min(50, int(clean["max_guesses"])))
     if "delay_ms" in clean:
         clean["delay_ms"] = max(0, min(60000, int(clean["delay_ms"])))
     if "cooldown_ms" in clean:
