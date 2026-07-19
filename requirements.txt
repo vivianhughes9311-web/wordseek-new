@@ -1,3 +1,4 @@
 Flask==3.1.1
 gunicorn==23.0.0
 wordfreq==3.1.1
+Telethon==1.44.0
