@@ -1,22 +1,18 @@
 /* ============================================================================
-   WordSeek — frontend logic
-   - Auto-solve on paste/input (debounced, stale-request safe)
-   - Mode auto-detection (4 / 5 letter)
-   - Best-guess spotlight + ranked guesses with confidence bars
-   - Copy on click, favorites (★), persistent history — all in localStorage
-   - Keyboard shortcuts, confetti on unique solve, toasts, skeleton loading
-   - Ambient particle field + aurora mouse parallax (perf & a11y aware)
-   The backend contract is unchanged:
+   WordSeek — frontend logic (vanilla JS, no libraries)
+   Kept deliberately lean for performance:
+     - No always-on animation loops (no particle canvas, no mouse parallax).
+     - Panda reactions are pure CSS, toggled by a single data-state attribute.
+     - Confetti is the only rAF usage, and only on a unique solve (short burst).
+   Backend contract is unchanged:
      POST /solve  {mode, board}  ->  {text, answer, guesses[], count, mode}
    ========================================================================== */
 (function () {
   "use strict";
 
-  /* ---------------------------------------------------------------- */
-  /* Element references                                               */
-  /* ---------------------------------------------------------------- */
   const $ = (id) => document.getElementById(id);
 
+  /* ---- element references ---- */
   const board       = $("board");
   const inputWrap   = $("inputWrap");
   const statusText  = $("status");
@@ -37,6 +33,9 @@
   const emptyState  = $("emptyState");
   const toastStack  = $("toastStack");
 
+  const heroPanda   = $("heroPanda");
+  const pandaBubble = $("pandaBubble");
+
   const tabHistory   = $("tabHistory");
   const tabFavorites = $("tabFavorites");
   const historyView  = $("historyView");
@@ -53,25 +52,36 @@
 
   const prefersReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /* ---------------------------------------------------------------- */
-  /* Local persistence                                                */
-  /* ---------------------------------------------------------------- */
+  /* ---- persistence ---- */
   const STORE = { history: "ws.history", favorites: "ws.favorites" };
   const MAX_HISTORY = 12;
-
-  const load = (key, fallback) => {
-    try { return JSON.parse(localStorage.getItem(key)) ?? fallback; }
-    catch { return fallback; }
-  };
-  const save = (key, value) => {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore quota */ }
-  };
-
+  const load = (k, f) => { try { return JSON.parse(localStorage.getItem(k)) ?? f; } catch { return f; } };
+  const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* quota */ } };
   let history   = load(STORE.history, []);
   let favorites = load(STORE.favorites, []);
 
   /* ---------------------------------------------------------------- */
-  /* Toast notifications                                              */
+  /* Pip the panda — expression + speech bubble                       */
+  /* ---------------------------------------------------------------- */
+  let bubbleTimer;
+  function setPanda(state, message) {
+    heroPanda.dataset.state = state;
+    if (message) {
+      pandaBubble.textContent = message;
+      // replay the bubble bounce
+      pandaBubble.style.animation = "none";
+      void pandaBubble.offsetWidth;
+      pandaBubble.style.animation = "";
+    }
+    // A happy pop should settle back to idle so it can retrigger later
+    if (state === "happy") {
+      clearTimeout(bubbleTimer);
+      bubbleTimer = setTimeout(() => { if (heroPanda.dataset.state === "happy") heroPanda.dataset.state = "idle"; }, 1600);
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Toasts                                                           */
   /* ---------------------------------------------------------------- */
   function toast(message, kind = "success") {
     const el = document.createElement("div");
@@ -79,12 +89,10 @@
     const icon = kind === "error" ? "!" : kind === "info" ? "i" : "✓";
     el.innerHTML = `<span class="toast-icon">${icon}</span><span>${message}</span>`;
     toastStack.appendChild(el);
-    // Auto-dismiss
     setTimeout(() => {
       el.classList.add("out");
       el.addEventListener("animationend", () => el.remove(), { once: true });
     }, 1600);
-    // Never let the stack grow unbounded
     while (toastStack.children.length > 3) toastStack.firstChild.remove();
   }
 
@@ -92,27 +100,19 @@
   /* Clipboard                                                        */
   /* ---------------------------------------------------------------- */
   async function copy(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
+    try { await navigator.clipboard.writeText(text); }
+    catch {
       const t = document.createElement("textarea");
-      t.value = text;
-      t.style.position = "fixed";
-      t.style.opacity = "0";
-      document.body.appendChild(t);
-      t.select();
+      t.value = text; t.style.position = "fixed"; t.style.opacity = "0";
+      document.body.appendChild(t); t.select();
       try { document.execCommand("copy"); } catch { /* noop */ }
       t.remove();
     }
   }
-
   function copyWord(word, sourceEl) {
     copy(word);
     toast(`<b>${word.toUpperCase()}</b> copied`);
-    if (sourceEl) {
-      sourceEl.classList.add("copied");
-      setTimeout(() => sourceEl.classList.remove("copied"), 500);
-    }
+    if (sourceEl) { sourceEl.classList.add("copied"); setTimeout(() => sourceEl.classList.remove("copied"), 520); }
   }
 
   /* ---------------------------------------------------------------- */
@@ -120,7 +120,6 @@
   /* ---------------------------------------------------------------- */
   const EMOJI = /[🟥🟨🟩]/u;
   const EMOJI_G = /[🟥🟨🟩]/gu;
-
   function detectMode(text) {
     if (/4[\s-]?letter/i.test(text)) return 4;
     if (/5[\s-]?letter/i.test(text)) return 5;
@@ -129,54 +128,38 @@
     const count = (line.match(EMOJI_G) || []).length;
     return count === 4 ? 4 : count === 5 ? 5 : null;
   }
-
   function setMode(mode) {
     modeBadge.classList.remove("mode-4", "mode-5");
-    if (mode === 4 || mode === 5) {
-      modeLabel.textContent = `${mode} LETTER`;
-      modeBadge.classList.add(`mode-${mode}`);
-    } else {
-      modeLabel.textContent = "AUTO";
-    }
-    modeBadge.classList.remove("pop");
-    void modeBadge.offsetWidth; // restart animation
-    modeBadge.classList.add("pop");
+    modeLabel.textContent = (mode === 4 || mode === 5) ? `${mode} letter` : "auto";
+    if (mode === 4 || mode === 5) modeBadge.classList.add(`mode-${mode}`);
+    modeBadge.classList.remove("pop"); void modeBadge.offsetWidth; modeBadge.classList.add("pop");
   }
 
   /* ---------------------------------------------------------------- */
-  /* Status                                                           */
+  /* Status + skeleton                                                */
   /* ---------------------------------------------------------------- */
   function setStatus(message, state = "idle") {
     statusText.textContent = message;
     statusDot.className = "status-dot" + (state !== "idle" ? ` ${state}` : "");
-    inputWrap.classList.toggle("solving", state === "loading");
   }
-
   function showSkeleton(show) {
     skeleton.classList.toggle("show", show);
-    if (show) {
-      bestWrap.hidden = true;
-      guessesBox.innerHTML = "";
-      emptyState.classList.add("hidden");
-    }
+    if (show) { bestWrap.hidden = true; guessesBox.innerHTML = ""; emptyState.classList.add("hidden"); }
   }
 
   /* ---------------------------------------------------------------- */
-  /* Confidence weighting (visual only)                               */
-  /* Backend returns ranked order, not scores. We map rank -> a       */
-  /* smoothly decaying confidence normalised so the top guess = 100%. */
+  /* Confidence weighting (visual only; backend returns ranked order) */
   /* ---------------------------------------------------------------- */
   function confidences(n) {
-    const weights = Array.from({ length: n }, (_, i) => 1 / Math.pow(i + 1, 0.62));
-    const max = weights[0] || 1;
-    return weights.map((w) => w / max);
+    const w = Array.from({ length: n }, (_, i) => 1 / Math.pow(i + 1, 0.62));
+    const max = w[0] || 1;
+    return w.map((x) => x / max);
   }
 
   /* ---------------------------------------------------------------- */
-  /* Favorites helpers                                                */
+  /* Favorites                                                        */
   /* ---------------------------------------------------------------- */
-  const isFav = (word) => favorites.includes(word);
-
+  const isFav = (w) => favorites.includes(w);
   function toggleFav(word, btn) {
     if (isFav(word)) {
       favorites = favorites.filter((w) => w !== word);
@@ -186,44 +169,31 @@
       toast(`<b>${word.toUpperCase()}</b> favorited`);
     }
     save(STORE.favorites, favorites);
-    // Reflect state on every matching star currently on screen
-    document.querySelectorAll(`.fav-btn[data-word="${word}"]`).forEach((b) => {
-      b.classList.toggle("is-fav", isFav(word));
-    });
-    if (btn && isFav(word)) {
-      btn.classList.remove("burst"); void btn.offsetWidth; btn.classList.add("burst");
-    }
+    document.querySelectorAll(`.fav-btn[data-word="${word}"]`).forEach((b) => b.classList.toggle("is-fav", isFav(word)));
+    if (btn && isFav(word)) { btn.classList.remove("burst"); void btn.offsetWidth; btn.classList.add("burst"); }
     renderFavorites();
   }
-
-  function makeFavBtn(word, small) {
+  function makeFavBtn(word) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "fav-btn" + (isFav(word) ? " is-fav" : "");
     b.dataset.word = word;
     b.setAttribute("aria-label", "Toggle favorite");
-    b.innerHTML =
-      '<svg viewBox="0 0 24 24" class="star"><path d="M12 2.5l2.9 6.06 6.6.79-4.9 4.55 1.3 6.6L12 17.9 6.1 21.1l1.3-6.6L2.5 9.35l6.6-.79z"/></svg>';
+    b.innerHTML = '<svg viewBox="0 0 24 24" class="star"><path d="M12 2.5l2.9 6.06 6.6.79-4.9 4.55 1.3 6.6L12 17.9 6.1 21.1l1.3-6.6L2.5 9.35l6.6-.79z"/></svg>';
     b.addEventListener("click", (e) => { e.stopPropagation(); toggleFav(word, b); });
     return b;
   }
 
   /* ---------------------------------------------------------------- */
-  /* Render guesses                                                   */
+  /* Render results                                                   */
   /* ---------------------------------------------------------------- */
   function renderResults(guesses) {
     guessesBox.innerHTML = "";
-
-    if (!guesses.length) {
-      bestWrap.hidden = true;
-      emptyState.classList.remove("hidden");
-      return;
-    }
-
+    if (!guesses.length) { bestWrap.hidden = true; emptyState.classList.remove("hidden"); return; }
     emptyState.classList.add("hidden");
     const conf = confidences(guesses.length);
 
-    // --- Best guess spotlight ---
+    // best guess
     const best = guesses[0];
     bestWrap.hidden = false;
     bestWord.textContent = best;
@@ -231,54 +201,42 @@
     bestFav.classList.toggle("is-fav", isFav(best));
     const pct = Math.round(conf[0] * 100);
     bestPct.textContent = `${pct}%`;
-    // animate the bar from 0
     bestBar.style.width = "0%";
     requestAnimationFrame(() => { bestBar.style.width = `${pct}%`; });
 
-    // --- Remaining guesses ---
+    // remaining guesses
     guesses.slice(1).forEach((word, i) => {
-      const rank = i + 2;
       const idx = i + 1;
       const item = document.createElement("div");
       item.className = "guess";
       item.setAttribute("role", "listitem");
-      item.setAttribute("tabindex", "0");
+      item.tabIndex = 0;
       item.dataset.word = word;
       item.title = "Click to copy";
       item.style.animationDelay = `${Math.min(i * 45, 320)}ms`;
-
       const cpct = Math.round(conf[idx] * 100);
       item.innerHTML =
-        `<div class="guess-top">` +
-          `<span class="guess-rank">#${rank}</span>` +
-        `</div>` +
+        `<div class="guess-top"><span class="guess-rank">#${idx + 1}</span></div>` +
         `<span class="guess-word">${word}</span>` +
-        `<div class="guess-bar"><span style="width:0%"></span></div>`;
-
-      // favorite star (top-right)
-      item.querySelector(".guess-top").appendChild(makeFavBtn(word, true));
-
-      // animate confidence bar
+        `<div class="guess-bar"><span></span></div>`;
+      item.querySelector(".guess-top").appendChild(makeFavBtn(word));
       const bar = item.querySelector(".guess-bar span");
       requestAnimationFrame(() => { bar.style.width = `${cpct}%`; });
-
       item.addEventListener("click", () => copyWord(word, item));
       guessesBox.appendChild(item);
     });
   }
 
   /* ---------------------------------------------------------------- */
-  /* History                                                          */
+  /* History + favorites panels                                       */
   /* ---------------------------------------------------------------- */
   function pushHistory(entry) {
-    // dedupe by board text
     history = history.filter((h) => h.board !== entry.board);
     history.unshift(entry);
     history = history.slice(0, MAX_HISTORY);
     save(STORE.history, history);
     renderHistory();
   }
-
   function renderHistory() {
     historyList.innerHTML = "";
     const has = history.length > 0;
@@ -295,18 +253,15 @@
           `<span class="hist-meta">` +
             `<span class="hist-tag ${h.mode === 4 ? "m4" : ""}">${h.mode}L</span>` +
             `<span>${h.count.toLocaleString()} words</span>` +
-          `</span>` +
-        `</span>`;
+          `</span></span>`;
       item.addEventListener("click", () => {
-        board.value = h.board;
-        board.focus();
+        board.value = h.board; board.focus();
         toast("Board restored", "info");
         solve();
       });
       historyList.appendChild(item);
     });
   }
-
   function renderFavorites() {
     favoritesList.innerHTML = "";
     const has = favorites.length > 0;
@@ -314,29 +269,19 @@
     favorites.forEach((word) => {
       const row = document.createElement("div");
       row.className = "fav-item";
-
       const w = document.createElement("button");
-      w.type = "button";
-      w.className = "fav-word";
-      w.textContent = word;
-      w.title = "Click to copy";
+      w.type = "button"; w.className = "fav-word"; w.textContent = word; w.title = "Click to copy";
       w.addEventListener("click", () => copyWord(word, row));
-
       const rm = document.createElement("button");
-      rm.type = "button";
-      rm.className = "fav-remove";
-      rm.setAttribute("aria-label", `Remove ${word}`);
-      rm.textContent = "✕";
+      rm.type = "button"; rm.className = "fav-remove"; rm.setAttribute("aria-label", `Remove ${word}`); rm.textContent = "✕";
       rm.addEventListener("click", () => toggleFav(word));
-
-      row.appendChild(w);
-      row.appendChild(rm);
+      row.appendChild(w); row.appendChild(rm);
       favoritesList.appendChild(row);
     });
   }
 
   /* ---------------------------------------------------------------- */
-  /* Solve — talks to the Flask backend                               */
+  /* Solve                                                            */
   /* ---------------------------------------------------------------- */
   let requestId = 0;
   let solveTimer = null;
@@ -351,6 +296,7 @@
       setStatus("Waiting for a board…");
       showSkeleton(false);
       renderResults([]);
+      setPanda("idle", "Paste a board and I'll help! ✨");
       return;
     }
 
@@ -361,10 +307,12 @@
       setStatus("Add a row with 🟥 🟨 🟩 tiles to detect the mode", "idle");
       showSkeleton(false);
       renderResults([]);
+      setPanda("thinking", "Hmm, I need some coloured tiles 🎨");
       return;
     }
 
     setStatus("Analyzing board…", "loading");
+    setPanda("thinking", "Thinking really hard… 🧠");
     showSkeleton(true);
 
     try {
@@ -374,7 +322,7 @@
         body: JSON.stringify({ mode, board: text }),
       });
       const data = await response.json();
-      if (current !== requestId) return; // a newer request superseded this one
+      if (current !== requestId) return;
 
       showSkeleton(false);
       if (!response.ok) throw new Error(data.error || "Request failed");
@@ -383,31 +331,25 @@
       renderResults(guesses);
 
       if (data.count) {
-        setStatus(
-          `${data.count.toLocaleString()} possible ${data.count === 1 ? "word" : "words"} — ranked best first`,
-          "active"
-        );
-        // Persist to history
-        pushHistory({
-          board: text,
-          answer: data.answer,
-          count: data.count,
-          mode: data.mode || mode,
-        });
-        // Celebrate a unique solve (exactly one candidate) — once per board
-        if (data.count === 1 && lastConfettiBoard !== text) {
-          lastConfettiBoard = text;
-          fireConfetti();
-          toast("Puzzle solved! 🎉", "success");
+        setStatus(`${data.count.toLocaleString()} possible ${data.count === 1 ? "word" : "words"} — ranked best first`, "active");
+        pushHistory({ board: text, answer: data.answer, count: data.count, mode: data.mode || mode });
+
+        if (data.count === 1) {
+          setPanda("happy", "That's the one! 🎉");
+          if (lastConfettiBoard !== text) { lastConfettiBoard = text; fireConfetti(); toast("Puzzle solved! 🎉", "success"); }
+        } else {
+          setPanda("happy", `Got ${data.count.toLocaleString()} — my top pick is ${(data.answer || "").toUpperCase()}!`);
         }
       } else {
         setStatus("No candidates match this board", "error");
+        setPanda("sad", "Uh oh, nothing matches 😳");
       }
     } catch (error) {
       if (current !== requestId) return;
       showSkeleton(false);
       renderResults([]);
       setStatus(error.message || "Something went wrong", "error");
+      setPanda("sad", "Something went wrong 😖");
     }
   }
 
@@ -419,19 +361,9 @@
     clearTimeout(solveTimer);
     solveTimer = setTimeout(solve, 120);
   });
+  clearBtn.addEventListener("click", () => { board.value = ""; board.focus(); solve(); });
 
-  clearBtn.addEventListener("click", () => {
-    board.value = "";
-    board.focus();
-    solve();
-  });
-
-  /* Star on the best guess */
-  bestFav.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const word = bestFav.dataset.word;
-    if (word) toggleFav(word, bestFav);
-  });
+  bestFav.addEventListener("click", (e) => { e.stopPropagation(); const w = bestFav.dataset.word; if (w) toggleFav(w, bestFav); });
   bestCard.addEventListener("click", (e) => {
     if (e.target.closest(".fav-btn")) return;
     if (bestWord.textContent && bestWord.textContent !== "—") copyWord(bestWord.textContent, bestCard);
@@ -458,58 +390,34 @@
   }
   tabHistory.addEventListener("click", () => switchTab("history"));
   tabFavorites.addEventListener("click", () => switchTab("favorites"));
-
-  clearHistory.addEventListener("click", () => {
-    history = [];
-    save(STORE.history, history);
-    renderHistory();
-    toast("History cleared", "info");
-  });
+  clearHistory.addEventListener("click", () => { history = []; save(STORE.history, history); renderHistory(); toast("History cleared", "info"); });
 
   /* ---------------------------------------------------------------- */
   /* Shortcuts modal                                                  */
   /* ---------------------------------------------------------------- */
-  function openModal() { shortcutsModal.hidden = false; }
-  function closeModal() { shortcutsModal.hidden = true; }
+  const openModal = () => { shortcutsModal.hidden = false; };
+  const closeModal = () => { shortcutsModal.hidden = true; };
   shortcutsBtn.addEventListener("click", openModal);
-  shortcutsModal.addEventListener("click", (e) => {
-    if (e.target.hasAttribute("data-close")) closeModal();
-  });
+  shortcutsModal.addEventListener("click", (e) => { if (e.target.hasAttribute("data-close")) closeModal(); });
 
   /* ---------------------------------------------------------------- */
   /* Keyboard shortcuts                                               */
-  /*   /      focus the board                                         */
-  /*   Esc    clear board / close modal                               */
-  /*   Enter  copy the best guess (when not typing in the board)      */
-  /*   ←/→    move focus between guesses                              */
   /* ---------------------------------------------------------------- */
   document.addEventListener("keydown", (e) => {
     const typing = document.activeElement === board;
-
     if (!shortcutsModal.hidden && e.key === "Escape") { closeModal(); return; }
 
-    if (e.key === "/" && !typing) {
-      e.preventDefault();
-      board.focus();
-      return;
-    }
+    if (e.key === "/" && !typing) { e.preventDefault(); board.focus(); return; }
 
     if (e.key === "Escape") {
-      if (board.value) {
-        board.value = "";
-        solve();
-        toast("Board cleared", "info");
-      }
+      if (board.value) { board.value = ""; solve(); toast("Board cleared", "info"); }
       board.blur();
       return;
     }
 
     if (e.key === "Enter" && !typing && !e.metaKey && !e.ctrlKey) {
       const w = bestWord.textContent;
-      if (!bestWrap.hidden && w && w !== "—") {
-        e.preventDefault();
-        copyWord(w, bestCard);
-      }
+      if (!bestWrap.hidden && w && w !== "—") { e.preventDefault(); copyWord(w, bestCard); }
       return;
     }
 
@@ -520,144 +428,66 @@
       if (items[next]) { e.preventDefault(); items[next].focus(); }
     }
   });
-
-  // Copy a focused guess with space (Enter handled above for best guess)
   guessesBox.addEventListener("keydown", (e) => {
     const el = e.target.closest(".guess");
     if (!el) return;
-    if (e.key === " " || e.key === "Enter") {
-      e.preventDefault();
-      copyWord(el.dataset.word, el);
-    }
+    if (e.key === " " || e.key === "Enter") { e.preventDefault(); copyWord(el.dataset.word, el); }
   });
 
   /* ---------------------------------------------------------------- */
-  /* Confetti — lightweight canvas burst on a unique solve            */
+  /* Confetti — the only rAF; short on-demand burst                   */
   /* ---------------------------------------------------------------- */
   function fireConfetti() {
     if (prefersReduced) return;
     const canvas = $("confetti");
     const ctx = canvas.getContext("2d");
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = window.innerWidth * dpr;
-    canvas.height = window.innerHeight * dpr;
+    const W = window.innerWidth, H = window.innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
     ctx.scale(dpr, dpr);
 
-    const colors = ["#22d3ee", "#7c5cff", "#ff5c8a", "#4c8fff", "#34e5a0", "#ffffff"];
-    const W = window.innerWidth;
-    const pieces = Array.from({ length: 130 }, () => ({
+    const colors = ["#a78bfa", "#7cc7ff", "#5ee0b0", "#ff9ec4", "#ffd76a", "#ffb59e"];
+    const pieces = Array.from({ length: 90 }, () => ({
       x: W / 2 + (Math.random() - 0.5) * 120,
-      y: window.innerHeight * 0.35,
-      vx: (Math.random() - 0.5) * 11,
-      vy: Math.random() * -13 - 4,
-      size: Math.random() * 7 + 4,
+      y: H * 0.34,
+      vx: (Math.random() - 0.5) * 10,
+      vy: Math.random() * -12 - 4,
+      size: Math.random() * 8 + 5,
       rot: Math.random() * Math.PI,
       vr: (Math.random() - 0.5) * 0.3,
       color: colors[(Math.random() * colors.length) | 0],
+      round: Math.random() > 0.5,
       life: 1,
     }));
 
     let frame = 0;
-    const gravity = 0.32;
     function tick() {
-      ctx.clearRect(0, 0, W, window.innerHeight);
+      ctx.clearRect(0, 0, W, H);
       let alive = false;
       for (const p of pieces) {
-        p.vy += gravity;
-        p.vx *= 0.99;
-        p.x += p.vx;
-        p.y += p.vy;
-        p.rot += p.vr;
-        if (frame > 60) p.life -= 0.02;
-        if (p.life > 0 && p.y < window.innerHeight + 40) {
+        p.vy += 0.3; p.vx *= 0.99;
+        p.x += p.vx; p.y += p.vy; p.rot += p.vr;
+        if (frame > 55) p.life -= 0.02;
+        if (p.life > 0 && p.y < H + 40) {
           alive = true;
           ctx.save();
           ctx.globalAlpha = Math.max(p.life, 0);
-          ctx.translate(p.x, p.y);
-          ctx.rotate(p.rot);
+          ctx.translate(p.x, p.y); ctx.rotate(p.rot);
           ctx.fillStyle = p.color;
-          ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.6);
+          if (p.round) { ctx.beginPath(); ctx.arc(0, 0, p.size / 2, 0, Math.PI * 2); ctx.fill(); }
+          else { ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.7); }
           ctx.restore();
         }
       }
       frame++;
-      if (alive && frame < 220) {
-        requestAnimationFrame(tick);
-      } else {
-        ctx.clearRect(0, 0, W, window.innerHeight);
-      }
+      if (alive && frame < 220) requestAnimationFrame(tick);
+      else ctx.clearRect(0, 0, W, H);
     }
     tick();
   }
 
-  /* ---------------------------------------------------------------- */
-  /* Ambient particle field (canvas) + aurora parallax                */
-  /* ---------------------------------------------------------------- */
-  function initParticles() {
-    if (prefersReduced) return;
-    const canvas = $("particles");
-    const ctx = canvas.getContext("2d");
-    let w, h, dpr, particles;
-
-    function resize() {
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
-      w = window.innerWidth;
-      h = window.innerHeight;
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const count = Math.min(56, Math.floor((w * h) / 26000));
-      particles = Array.from({ length: count }, () => ({
-        x: Math.random() * w,
-        y: Math.random() * h,
-        r: Math.random() * 1.6 + 0.4,
-        vx: (Math.random() - 0.5) * 0.14,
-        vy: (Math.random() - 0.5) * 0.14,
-        a: Math.random() * 0.5 + 0.2,
-      }));
-    }
-
-    function draw() {
-      ctx.clearRect(0, 0, w, h);
-      for (const p of particles) {
-        p.x += p.vx; p.y += p.vy;
-        if (p.x < 0) p.x = w; if (p.x > w) p.x = 0;
-        if (p.y < 0) p.y = h; if (p.y > h) p.y = 0;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(180, 190, 255, ${p.a})`;
-        ctx.fill();
-      }
-      requestAnimationFrame(draw);
-    }
-
-    resize();
-    window.addEventListener("resize", resize, { passive: true });
-    draw();
-  }
-
-  function initParallax() {
-    if (prefersReduced || window.matchMedia("(pointer: coarse)").matches) return;
-    const aurora = document.querySelector(".aurora");
-    if (!aurora) return;
-    let raf = null;
-    window.addEventListener("mousemove", (e) => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        const dx = (e.clientX / window.innerWidth - 0.5) * 26;
-        const dy = (e.clientY / window.innerHeight - 0.5) * 26;
-        aurora.style.transform = `translate(${dx}px, ${dy}px)`;
-        raf = null;
-      });
-    }, { passive: true });
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* Boot                                                             */
-  /* ---------------------------------------------------------------- */
+  /* ---- boot ---- */
   renderHistory();
   renderFavorites();
-  initParticles();
-  initParallax();
   board.focus();
 })();
