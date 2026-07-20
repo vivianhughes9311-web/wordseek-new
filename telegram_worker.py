@@ -18,7 +18,9 @@ from collections import deque
 
 import board as board_utils
 import crypto_store
+import db
 import users as user_store
+from automation import Automation, event_of
 from autoplay import AutoplayEngine
 from solver import solve_board
 
@@ -76,6 +78,19 @@ class UserRuntime:
             send=lambda text: self.service._send_text(self, text),
             on_activity=self._on_activity,
             on_history=self._on_history,
+            loop=self.service.loop,
+        )
+        try:
+            self.user_id = int(str(uid)[1:]) if str(uid).startswith("u") else None
+        except (ValueError, TypeError):
+            self.user_id = None
+        self.automation = Automation(
+            send=lambda text: self.service._send_text(self, text),
+            get_messages=lambda: db.message_texts(self.user_id) if self.user_id else [],
+            get_settings=lambda: db.get_msg_settings(self.user_id) if self.user_id else {},
+            get_rules=lambda: db.list_rules(self.user_id) if self.user_id else [],
+            engine=self.engine,
+            log=self._on_activity,
             loop=self.service.loop,
         )
 
@@ -176,6 +191,12 @@ class TelegramService:
                                           "solve_ms": round((time.perf_counter() - start) * 1000, 1)}
                     except Exception:
                         pass
+                # Fire automation (custom messages + rules) on game events —
+                # independent of whether autoplay is enabled.
+                ev = event_of(text)
+                if ev and rt.user_id:
+                    rt.automation.fire(ev)
+
                 if rt.data["autoplay"].get("enabled"):
                     await rt.engine.handle(text, event.id)
                 elif rt.data.get("auto_send") and detected and rt.last_result and rt.last_result["answer"]:

@@ -1,63 +1,75 @@
-"""Identity, optional access gate, CSRF and rate limiting.
+"""Session auth, CSRF and rate limiting for the login system.
 
-Identity: every visitor gets a signed `uid` in their session cookie — this is
-their account handle (each uid maps to one Telegram login).
-
-Access gate: OPTIONAL. If DASHBOARD_PASSWORD is set, the whole dashboard sits
-behind that shared password (useful for a private instance). If it is NOT set,
-the dashboard is open and the only login is "Login with Telegram" — so no scary
-password warning when it is unset.
+- Login state lives in Flask's signed session cookie.
+- Idle timeout: 1 hour normally, 30 days with "remember me".
+- Identity: uid string "u<id>" (keys Telegram/autoplay data) + integer login_id
+  (keys SQLite messages/rules/settings).
+- Passwords/hashes never touch the session or the frontend.
 """
 import functools
 import hmac
-import os
 import secrets
 import time
 from collections import defaultdict, deque
 
 from flask import jsonify, redirect, request, session, url_for
 
-ACCESS_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+IDLE_SECONDS = 3600            # 1 hour
+REMEMBER_SECONDS = 30 * 86400  # 30 days
+
 _hits = defaultdict(deque)
 
 
-# --- identity ---------------------------------------------------------------
-def ensure_uid() -> str:
-    uid = session.get("uid")
-    if not uid:
-        uid = secrets.token_urlsafe(18)
-        session["uid"] = uid
-        session.permanent = True
-    return uid
-
-
-def current_uid() -> str:
-    return session.get("uid") or ensure_uid()
-
-
-# --- optional access gate ---------------------------------------------------
-def gate_enabled() -> bool:
-    return bool(ACCESS_PASSWORD)
-
-
-def gate_ok() -> bool:
-    return (not gate_enabled()) or (session.get("gate_ok") is True)
-
-
-def check_password(candidate: str) -> bool:
-    if not ACCESS_PASSWORD:
-        return False
-    return hmac.compare_digest(str(candidate), ACCESS_PASSWORD)
-
-
-def open_gate():
-    session["gate_ok"] = True
-    session.permanent = True
+# --- session lifecycle ------------------------------------------------------
+def login_session(user_row, remember: bool) -> str:
+    session.clear()
+    session["uid"] = f"u{user_row['id']}"
+    session["login_id"] = int(user_row["id"])
+    session["username"] = user_row["username"]
+    session["is_admin"] = bool(user_row["is_admin"])
+    session["remember"] = bool(remember)
+    session["last"] = time.time()
     session["csrf"] = secrets.token_urlsafe(32)
+    session.permanent = bool(remember)
+    sid = secrets.token_urlsafe(12)
+    session["sid"] = sid
+    return sid
 
 
-def close_gate():
-    session.pop("gate_ok", None)
+def logout_session():
+    session.clear()
+
+
+def _expired() -> bool:
+    last = session.get("last", 0)
+    limit = REMEMBER_SECONDS if session.get("remember") else IDLE_SECONDS
+    return (time.time() - last) > limit
+
+
+def is_authed() -> bool:
+    if not session.get("uid"):
+        return False
+    if _expired():
+        session.clear()
+        return False
+    return True
+
+
+def touch():
+    if session.get("uid"):
+        session["last"] = time.time()
+
+
+def current_uid():
+    return session.get("uid")
+
+
+def current_login_id():
+    return session.get("login_id")
+
+
+def is_admin() -> bool:
+    return bool(session.get("is_admin"))
 
 
 # --- CSRF -------------------------------------------------------------------
@@ -81,14 +93,27 @@ def _valid_csrf() -> bool:
 
 
 # --- decorators -------------------------------------------------------------
-def access_required(fn):
+def login_required(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        ensure_uid()
-        if not gate_ok():
+        if not is_authed():
             if request.path.startswith("/api/"):
-                return jsonify({"error": "Access locked."}), 401
+                return jsonify({"error": "Authentication required."}), 401
             return redirect(url_for("login", next=request.path))
+        touch()
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def admin_required(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not is_authed():
+            return jsonify({"error": "Authentication required."}), 401
+        if not is_admin():
+            return jsonify({"error": "Admin only."}), 403
+        touch()
         return fn(*args, **kwargs)
 
     return wrapper
@@ -114,7 +139,7 @@ def rate_limit(max_calls: int = 30, per_seconds: int = 10):
             while bucket and bucket[0] <= now - per_seconds:
                 bucket.popleft()
             if len(bucket) >= max_calls:
-                return jsonify({"error": "Rate limit exceeded. Please slow down."}), 429
+                return jsonify({"error": "Too many attempts. Please slow down."}), 429
             bucket.append(now)
             return fn(*args, **kwargs)
 

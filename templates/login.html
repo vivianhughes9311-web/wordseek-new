@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f4f1ff">
   <meta name="color-scheme" content="light">
-  <title>WordSeek — Dashboard Login</title>
+  <title>WordSeek — {{ 'Set up' if setup else 'Sign in' }}</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -15,10 +15,8 @@
 </head>
 <body>
   <div class="bg" aria-hidden="true">
-    <span class="blob blob-lav"></span>
-    <span class="blob blob-sky"></span>
-    <span class="blob blob-mint"></span>
-    <span class="blob blob-peach"></span>
+    <span class="blob blob-lav"></span><span class="blob blob-sky"></span>
+    <span class="blob blob-mint"></span><span class="blob blob-peach"></span>
   </div>
 
   <div class="login-wrap">
@@ -34,17 +32,30 @@
           <circle cx="13.5" cy="30" r="2.4" fill="#ff9ec4" opacity=".55"/><circle cx="34.5" cy="30" r="2.4" fill="#ff9ec4" opacity=".55"/>
         </svg>
       </div>
-      <h1 class="login-title">Dashboard access</h1>
-      <p class="login-sub">This instance is protected. Enter the access password to continue, then log in with your Telegram account.</p>
 
-      {% if error %}
-        <p class="login-error" role="alert">{{ error }}</p>
+      {% if setup %}
+        <h1 class="login-title">Create your admin account</h1>
+        <p class="login-sub">This is the first account, so it becomes the administrator.</p>
+      {% else %}
+        <h1 class="login-title">Welcome back</h1>
+        <p class="login-sub">Sign in to your WordSeek dashboard.</p>
       {% endif %}
 
-      <label class="visually-hidden" for="password">Access password</label>
-      <input id="password" class="login-input" type="password" name="password" placeholder="Access password" autocomplete="current-password" autofocus>
-      <button class="login-btn" type="submit">Continue</button>
+      {% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}
 
+      <label class="fld-label" for="username">Username</label>
+      <input id="username" class="login-input" type="text" name="username" placeholder="username"
+             autocomplete="username" autofocus minlength="3" maxlength="32" required>
+
+      <label class="fld-label" for="password">Password</label>
+      <input id="password" class="login-input" type="password" name="password" placeholder="••••••••"
+             autocomplete="{{ 'new-password' if setup else 'current-password' }}" minlength="6" required>
+
+      {% if not setup %}
+        <label class="remember"><input type="checkbox" name="remember"> Remember me for 30 days</label>
+      {% endif %}
+
+      <button class="login-btn" type="submit">{{ 'Create account' if setup else 'Sign in' }}</button>
       <a class="login-back" href="/">← Back to the solver</a>
     </form>
   </div>
