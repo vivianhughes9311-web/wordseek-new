@@ -6,6 +6,7 @@
 """
 import json
 import os
+import secrets
 import sqlite3
 import threading
 import time
@@ -88,13 +89,41 @@ def _connect():
             user_id INTEGER NOT NULL,
             ts REAL, category TEXT, text TEXT
         );
+        CREATE TABLE IF NOT EXISTS app_settings(
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            data TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS password_reset_tokens(
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            expires REAL,
+            used INTEGER NOT NULL DEFAULT 0
+        );
         CREATE INDEX IF NOT EXISTS idx_games_user ON games(user_id, id);
         CREATE INDEX IF NOT EXISTS idx_logs_user ON logs(user_id, id);
         """
     )
-    # migrations for existing databases (ignore if the column already exists)
+    # migrations for existing databases (each guarded; runs only when the column
+    # is newly added, so existing data — including the current admin — is kept).
     try:
         conn.execute("ALTER TABLE messages ADD COLUMN weight INTEGER NOT NULL DEFAULT 1")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+        conn.execute("UPDATE users SET role='admin' WHERE is_admin=1")  # preserve existing admin
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
     except Exception:
         pass
     conn.commit()
@@ -118,14 +147,24 @@ def count_users() -> int:
         return conn().execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
 
 
+def _rowget(row, key, default=None):
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
 def safe_user(row) -> dict:
     if row is None:
         return None
+    role = _rowget(row, "role", "user") or "user"
     return {
         "id": row["id"],
         "username": row["username"],
-        "is_admin": bool(row["is_admin"]),
-        "disabled": bool(row["disabled"]),
+        "role": role,
+        "is_admin": role == "admin",
+        "status": _rowget(row, "status", "active") or "active",
+        "email": _rowget(row, "email"),
         "created_at": row["created_at"],
         "last_login": row["last_login"],
         "last_seen": row["last_seen"],
@@ -133,22 +172,64 @@ def safe_user(row) -> dict:
     }
 
 
-def create_user(username: str, password: str, is_admin: bool = False):
+def create_user(username, password, is_admin=False, role=None, status="active", email=None):
     username = (username or "").strip()
     if len(username) < 3 or len(username) > 32:
         return {"ok": False, "error": "Username must be 3–32 characters."}
     if len(password or "") < 6:
         return {"ok": False, "error": "Password must be at least 6 characters."}
+    role = role or ("admin" if is_admin else "user")
+    role = role if role in ("admin", "user") else "user"
+    status = status if status in ("active", "pending", "suspended") else "active"
     with _lock:
         try:
             cur = conn().execute(
-                "INSERT INTO users(username, password_hash, is_admin, disabled, created_at) VALUES(?,?,?,0,?)",
-                (username, generate_password_hash(password), 1 if is_admin else 0, time.time()),
+                "INSERT INTO users(username, password_hash, is_admin, disabled, created_at, role, status, email) "
+                "VALUES(?,?,?,0,?,?,?,?)",
+                (username, generate_password_hash(password), 1 if role == "admin" else 0,
+                 time.time(), role, status, (email or None)),
             )
             conn().commit()
             return {"ok": True, "id": cur.lastrowid}
         except sqlite3.IntegrityError:
             return {"ok": False, "error": "That username is taken."}
+
+
+def set_role(user_id: int, role: str):
+    role = role if role in ("admin", "user") else "user"
+    with _lock:
+        conn().execute("UPDATE users SET role=?, is_admin=? WHERE id=?",
+                       (role, 1 if role == "admin" else 0, user_id))
+        conn().commit()
+    return {"ok": True, "role": role}
+
+
+def set_status(user_id: int, status: str):
+    status = status if status in ("active", "pending", "suspended") else "active"
+    with _lock:
+        conn().execute("UPDATE users SET status=? WHERE id=?", (status, user_id))
+        # suspending/approving invalidates existing sessions
+        conn().execute("UPDATE users SET session_epoch = session_epoch + 1 WHERE id=?", (user_id,))
+        conn().commit()
+    return {"ok": True, "status": status}
+
+
+def bump_epoch(user_id: int):
+    with _lock:
+        conn().execute("UPDATE users SET session_epoch = session_epoch + 1 WHERE id=?", (user_id,))
+        conn().commit()
+    row = get_user(user_id)
+    return row["session_epoch"] if row else 0
+
+
+def get_epoch(user_id: int) -> int:
+    row = get_user(user_id)
+    return _rowget(row, "session_epoch", 0) or 0 if row else 0
+
+
+def count_active_users() -> int:
+    with _lock:
+        return conn().execute("SELECT COUNT(*) c FROM users WHERE status!='suspended'").fetchone()["c"]
 
 
 def get_by_username(username: str):
@@ -165,8 +246,11 @@ def verify_login(username: str, password: str):
     row = get_by_username(username)
     if not row or not check_password_hash(row["password_hash"], password or ""):
         return None
-    if row["disabled"]:
-        return "disabled"
+    status = _rowget(row, "status", "active") or "active"
+    if row["disabled"] or status == "suspended":
+        return "suspended"
+    if status == "pending":
+        return "pending"
     return row
 
 
@@ -207,7 +291,7 @@ def set_disabled(user_id: int, disabled: bool):
 
 def delete_user(user_id: int):
     with _lock:
-        for tbl in ("users", "messages", "rules", "settings", "prefs", "games", "logs"):
+        for tbl in ("users", "messages", "rules", "settings", "prefs", "games", "logs", "password_reset_tokens"):
             col = "id" if tbl == "users" else "user_id"
             conn().execute(f"DELETE FROM {tbl} WHERE {col}=?", (user_id,))
         conn().commit()
@@ -602,4 +686,114 @@ def list_logs(user_id: int, category: str = None, query: str = None, limit: int 
     args.append(max(1, min(500, limit)))
     with _lock:
         rows = conn().execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- #
+# platform settings (global) — registration + default limits
+# --------------------------------------------------------------------------- #
+DEFAULT_APP_SETTINGS = {
+    "registration_open": True,
+    "require_invite": False,
+    "invite_code": "",
+    "require_approval": False,
+    "max_users": 0,          # 0 = unlimited
+    "default_role": "user",
+    "terms_required": True,
+    "max_groups": 5,
+    "max_telegram": 1,
+    "max_autoplay": 1,
+}
+
+
+def get_app_settings() -> dict:
+    with _lock:
+        row = conn().execute("SELECT data FROM app_settings WHERE id=1").fetchone()
+    data = {}
+    if row:
+        try:
+            data = json.loads(row["data"])
+        except Exception:
+            data = {}
+    merged = dict(DEFAULT_APP_SETTINGS)
+    merged.update({k: v for k, v in data.items() if k in DEFAULT_APP_SETTINGS})
+    return merged
+
+
+def save_app_settings(patch: dict) -> dict:
+    cur = get_app_settings()
+    for k in DEFAULT_APP_SETTINGS:
+        if k in patch:
+            cur[k] = patch[k]
+    for b in ("registration_open", "require_invite", "require_approval", "terms_required"):
+        cur[b] = bool(cur.get(b))
+    cur["invite_code"] = str(cur.get("invite_code") or "")[:64]
+    cur["default_role"] = "admin" if cur.get("default_role") == "admin" else "user"
+    for n, lo, hi in (("max_users", 0, 100000), ("max_groups", 0, 1000),
+                      ("max_telegram", 1, 100), ("max_autoplay", 1, 100)):
+        try:
+            cur[n] = max(lo, min(hi, int(cur.get(n, DEFAULT_APP_SETTINGS[n]))))
+        except (TypeError, ValueError):
+            cur[n] = DEFAULT_APP_SETTINGS[n]
+    with _lock:
+        conn().execute("INSERT INTO app_settings(id, data) VALUES(1, ?) "
+                       "ON CONFLICT(id) DO UPDATE SET data=excluded.data", (json.dumps(cur),))
+        conn().commit()
+    return cur
+
+
+# --------------------------------------------------------------------------- #
+# password reset tokens
+# --------------------------------------------------------------------------- #
+def create_reset_token(user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
+    with _lock:
+        conn().execute("INSERT INTO password_reset_tokens(token, user_id, expires, used) VALUES(?,?,?,0)",
+                       (token, user_id, time.time() + 3600))
+        conn().commit()
+    return token
+
+
+def get_reset(token: str):
+    with _lock:
+        row = conn().execute("SELECT * FROM password_reset_tokens WHERE token=?", (token,)).fetchone()
+    if not row or row["used"] or (row["expires"] or 0) < time.time():
+        return None
+    return row
+
+
+def use_reset(token: str):
+    with _lock:
+        conn().execute("UPDATE password_reset_tokens SET used=1 WHERE token=?", (token,))
+        conn().commit()
+
+
+# --------------------------------------------------------------------------- #
+# global statistics (admin)
+# --------------------------------------------------------------------------- #
+def global_stats() -> dict:
+    with _lock:
+        c = conn()
+        users = c.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]
+        admins = c.execute("SELECT COUNT(*) n FROM users WHERE role='admin'").fetchone()["n"]
+        pending = c.execute("SELECT COUNT(*) n FROM users WHERE status='pending'").fetchone()["n"]
+        suspended = c.execute("SELECT COUNT(*) n FROM users WHERE status='suspended'").fetchone()["n"]
+        online = c.execute("SELECT COUNT(*) n FROM users WHERE last_seen > ?",
+                           (time.time() - ACTIVE_WINDOW,)).fetchone()["n"]
+        games = c.execute("SELECT COUNT(*) n FROM games").fetchone()["n"]
+        wins = c.execute("SELECT COUNT(*) n FROM games WHERE result='won'").fetchone()["n"]
+    return {
+        "users": users, "admins": admins, "pending": pending, "suspended": suspended,
+        "online": online, "games": games, "wins": wins,
+        "win_rate": round(100 * wins / games) if games else 0,
+    }
+
+
+def admin_logs(limit: int = 200) -> list:
+    """All users' logs (admin system view). Logs never contain secrets."""
+    with _lock:
+        rows = conn().execute(
+            "SELECT l.ts, l.category, l.text, u.username FROM logs l "
+            "JOIN users u ON u.id = l.user_id ORDER BY l.id DESC LIMIT ?",
+            (max(1, min(500, limit)),)).fetchall()
         return [dict(r) for r in rows]

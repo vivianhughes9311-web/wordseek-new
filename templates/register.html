@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f4f1ff">
+  <meta name="color-scheme" content="light">
+  <title>WordSeek — {{ 'Set up admin' if first else 'Create account' }}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <div class="bg" aria-hidden="true">
+    <span class="blob blob-lav"></span><span class="blob blob-sky"></span>
+    <span class="blob blob-mint"></span><span class="blob blob-peach"></span>
+  </div>
+
+  <div class="login-wrap">
+    {% if closed %}
+    <div class="login-card card">
+      <div class="login-panda" aria-hidden="true">
+        <svg viewBox="0 0 48 48" class="brand-panda">
+          <circle cx="15" cy="14" r="6.5" fill="#2f2b3a"/><circle cx="33" cy="14" r="6.5" fill="#2f2b3a"/>
+          <ellipse cx="24" cy="26" rx="16" ry="14.5" fill="#fff"/>
+          <ellipse cx="18" cy="24" rx="4.4" ry="6" fill="#2f2b3a" transform="rotate(-16 18 24)"/>
+          <ellipse cx="30" cy="24" rx="4.4" ry="6" fill="#2f2b3a" transform="rotate(16 30 24)"/>
+          <circle cx="18.5" cy="25" r="1.9" fill="#fff"/><circle cx="29.5" cy="25" r="1.9" fill="#fff"/>
+          <ellipse cx="24" cy="31" rx="2.3" ry="1.7" fill="#2f2b3a"/></svg>
+      </div>
+      <h1 class="login-title">Registration is closed</h1>
+      <p class="login-sub">New sign-ups are currently disabled by the administrator.</p>
+      <a class="login-back" href="/login">← Back to sign in</a>
+    </div>
+    {% else %}
+    <form class="login-card card" method="post" action="/register" id="regForm">
+      <div class="login-panda" aria-hidden="true">
+        <svg viewBox="0 0 48 48" class="brand-panda">
+          <circle cx="15" cy="14" r="6.5" fill="#2f2b3a"/><circle cx="33" cy="14" r="6.5" fill="#2f2b3a"/>
+          <ellipse cx="24" cy="26" rx="16" ry="14.5" fill="#fff"/>
+          <ellipse cx="18" cy="24" rx="4.4" ry="6" fill="#2f2b3a" transform="rotate(-16 18 24)"/>
+          <ellipse cx="30" cy="24" rx="4.4" ry="6" fill="#2f2b3a" transform="rotate(16 30 24)"/>
+          <circle cx="18.5" cy="25" r="1.9" fill="#fff"/><circle cx="29.5" cy="25" r="1.9" fill="#fff"/>
+          <ellipse cx="24" cy="31" rx="2.3" ry="1.7" fill="#2f2b3a"/>
+          <circle cx="13.5" cy="30" r="2.4" fill="#ff9ec4" opacity=".55"/><circle cx="34.5" cy="30" r="2.4" fill="#ff9ec4" opacity=".55"/></svg>
+      </div>
+      {% if first %}
+        <h1 class="login-title">Create the admin account</h1>
+        <p class="login-sub">This first account becomes the platform administrator.</p>
+      {% else %}
+        <h1 class="login-title">Create your account</h1>
+        <p class="login-sub">Get your own private WordSeek dashboard.</p>
+      {% endif %}
+
+      {% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}
+
+      <label class="fld-label" for="username">Username</label>
+      <input id="username" class="login-input" name="username" type="text" placeholder="username"
+             autocomplete="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9_]{3,32}" required autofocus>
+
+      <label class="fld-label" for="password">Password</label>
+      <input id="password" class="login-input" name="password" type="password" placeholder="min 8, letters + numbers"
+             autocomplete="new-password" minlength="8" required>
+      <div class="pw-meter" id="pwMeter"><span></span></div>
+
+      <label class="fld-label" for="confirm">Confirm password</label>
+      <input id="confirm" class="login-input" name="confirm" type="password" placeholder="repeat password"
+             autocomplete="new-password" required>
+      <p id="pwMsg" class="pw-msg"></p>
+
+      {% if not first and cfg.require_invite %}
+        <label class="fld-label" for="invite">Invite code</label>
+        <input id="invite" class="login-input" name="invite" type="text" placeholder="invite code" required>
+      {% endif %}
+
+      {% if cfg.terms_required or first %}
+        <label class="remember"><input type="checkbox" name="terms" required> I accept the terms of use</label>
+      {% endif %}
+
+      <button class="login-btn" type="submit">{{ 'Create admin' if first else 'Create account' }}</button>
+      <a class="login-back" href="/login">Already have an account? Sign in</a>
+    </form>
+    {% endif %}
+  </div>
+
+  <script>
+    // lightweight password strength + match (no libraries)
+    (function () {
+      var p = document.getElementById("password"), c = document.getElementById("confirm");
+      var meter = document.getElementById("pwMeter"), bar = meter && meter.firstElementChild, msg = document.getElementById("pwMsg");
+      if (!p) return;
+      function score(v) { var s = 0; if (v.length >= 8) s++; if (/[A-Z]/.test(v) && /[a-z]/.test(v)) s++; if (/\d/.test(v)) s++; if (/[^A-Za-z0-9]/.test(v)) s++; return s; }
+      function upd() {
+        var s = score(p.value); bar.style.width = (s * 25) + "%";
+        bar.style.background = ["#ff9ec4", "#ffb59e", "#ffd76a", "#5ee0b0"][Math.max(0, s - 1)] || "#e5e0f0";
+        if (c.value && c.value !== p.value) { msg.textContent = "Passwords don't match"; msg.className = "pw-msg bad"; }
+        else if (p.value.length && p.value.length < 8) { msg.textContent = "At least 8 characters"; msg.className = "pw-msg bad"; }
+        else { msg.textContent = ""; msg.className = "pw-msg"; }
+      }
+      p.addEventListener("input", upd); c.addEventListener("input", upd);
+    })();
+  </script>
+</body>
+</html>

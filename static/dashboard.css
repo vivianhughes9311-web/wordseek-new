@@ -508,3 +508,22 @@
 :root[data-anim="off"] *, :root[data-anim="off"] *::before, :root[data-anim="off"] *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 :root[data-anim="slow"] * { transition-duration: .5s; }
 :root[data-anim="fast"] * { transition-duration: .12s; }
+
+/* auth extras */
+.pw-meter { width: 100%; height: 6px; border-radius: 999px; background: rgba(167,139,250,.14); overflow: hidden; margin: 0 0 10px; }
+.pw-meter span { display: block; height: 100%; width: 0; border-radius: 999px; background: #e5e0f0; transition: width .25s var(--ease), background .25s var(--ease); }
+.pw-msg { margin: 0 0 8px; font-size: 12px; min-height: 15px; color: var(--muted); width: 100%; }
+.pw-msg.bad { color: #d2557f; }
+.login-links { display: flex; gap: 10px; justify-content: center; align-items: center; margin-top: 14px; font-size: 13px; }
+.login-links a { color: var(--lav); font-weight: 600; }
+.login-links a:hover { text-decoration: underline; }
+.login-links span { color: var(--faint); }
+.reset-link { display: block; width: 100%; word-break: break-all; padding: 10px 12px; border-radius: 10px; background: rgba(167,139,250,.1); color: var(--lav); font-size: 12.5px; margin: 8px 0; font-family: ui-monospace, monospace; }
+
+/* admin / profile extras */
+.nav-sep { padding: 12px 12px 4px; font-size: 10.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.mini-select { height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-solid); color: var(--ink); font-size: 12.5px; padding: 0 6px; }
+.soft-hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+.badge.warn { background: rgba(255,215,106,.22); color: #b8862f; }
+.logwho { flex: none; font-size: 12px; color: var(--lav); }
+:root[data-theme="dark"] .mini-select, :root[data-theme="cyber"] .mini-select { background: rgba(255,255,255,.05); }

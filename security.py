@@ -21,12 +21,22 @@ _hits = defaultdict(deque)
 
 
 # --- session lifecycle ------------------------------------------------------
+def _rg(row, key, default=None):
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
 def login_session(user_row, remember: bool) -> str:
     session.clear()
+    role = _rg(user_row, "role", "user") or "user"
     session["uid"] = f"u{user_row['id']}"
     session["login_id"] = int(user_row["id"])
     session["username"] = user_row["username"]
-    session["is_admin"] = bool(user_row["is_admin"])
+    session["role"] = role
+    session["is_admin"] = role == "admin"
+    session["epoch"] = _rg(user_row, "session_epoch", 0) or 0
     session["remember"] = bool(remember)
     session["last"] = time.time()
     session["csrf"] = secrets.token_urlsafe(32)
@@ -69,7 +79,11 @@ def current_login_id():
 
 
 def is_admin() -> bool:
-    return bool(session.get("is_admin"))
+    return session.get("role") == "admin" or bool(session.get("is_admin"))
+
+
+def session_epoch() -> int:
+    return session.get("epoch", 0)
 
 
 # --- CSRF -------------------------------------------------------------------

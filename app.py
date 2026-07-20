@@ -55,15 +55,23 @@ except Exception:  # pragma: no cover
 
 
 @app.before_request
-def _touch_seen():
-    if request.path.startswith(("/api/", "/dashboard")):
-        try:
-            if security.is_authed():
-                lid = current_login_id()
-                if lid:
-                    db.touch_seen(lid)
-        except Exception:
-            pass
+def _session_guard():
+    if not request.path.startswith(("/api/", "/dashboard")):
+        return
+    try:
+        if not security.is_authed():
+            return
+        lid = current_login_id()
+        row = db.get_user(lid) if lid else None
+        # invalidate the session if the account is gone, suspended/pending, or a
+        # global logout / password reset bumped the session epoch.
+        if (not row or db.safe_user(row)["status"] != "active"
+                or (db._rowget(row, "session_epoch", 0) or 0) != security.session_epoch()):
+            security.logout_session()
+            return
+        db.touch_seen(lid)
+    except Exception:
+        pass
 
 
 # ----------------------------------------------------------------------------
@@ -108,42 +116,129 @@ def solve():
 # ----------------------------------------------------------------------------
 # Auth
 # ----------------------------------------------------------------------------
+import re
+
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,32}$")
+
+
+def _password_error(pw):
+    if len(pw or "") < 8:
+        return "Password must be at least 8 characters."
+    if not re.search(r"[A-Za-z]", pw) or not re.search(r"\d", pw):
+        return "Password must include letters and numbers."
+    return None
+
+
 @app.route("/login", methods=["GET", "POST"])
 @rate_limit(max_calls=12, per_seconds=60)
 def login():
-    setup = db.count_users() == 0
-    if security.is_authed() and not setup:
+    if db.count_users() == 0:
+        return redirect(url_for("register"))
+    if security.is_authed():
         return redirect(url_for("dashboard"))
 
     error = None
     if request.method == "POST":
-        username = request.form.get("username", "")
+        row = db.verify_login(request.form.get("username", ""), request.form.get("password", ""))
+        if row == "suspended":
+            error = "This account has been suspended."
+        elif row == "pending":
+            error = "Your account is awaiting admin approval."
+        elif not row:
+            error = "Incorrect username or password."
+        else:
+            sid = security.login_session(row, bool(request.form.get("remember")))
+            db.touch_login(row["id"], sid)
+            db.add_log(row["id"], "login", "Signed in")
+            nxt = request.args.get("next", "")
+            return redirect(nxt if nxt.startswith("/") else url_for("dashboard"))
+
+    return render_template("login.html", error=error, notice=request.args.get("notice"))
+
+
+@app.route("/register", methods=["GET", "POST"])
+@rate_limit(max_calls=8, per_seconds=120)
+def register():
+    first = db.count_users() == 0
+    cfg = db.get_app_settings()
+    if security.is_authed():
+        return redirect(url_for("dashboard"))
+    if not first and not cfg["registration_open"]:
+        return render_template("register.html", closed=True, cfg=cfg, first=False)
+
+    error = None
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
-        remember = bool(request.form.get("remember"))
-        if setup:
-            res = db.create_user(username, password, is_admin=True)
+        confirm = request.form.get("confirm", "")
+        invite = request.form.get("invite", "").strip()
+        terms = bool(request.form.get("terms"))
+
+        if not USERNAME_RE.match(username):
+            error = "Username must be 3–32 letters, numbers or underscores."
+        elif (perr := _password_error(password)):
+            error = perr
+        elif password != confirm:
+            error = "Passwords do not match."
+        elif (cfg["terms_required"] or first) and not terms:
+            error = "You must accept the terms to continue."
+        elif not first and cfg["require_invite"] and invite != cfg["invite_code"]:
+            error = "Invalid invite code."
+        elif not first and cfg["max_users"] and db.count_users() >= cfg["max_users"]:
+            error = "Registration is currently full."
+        else:
+            role, status = ("admin", "active") if first else (
+                cfg["default_role"], "pending" if cfg["require_approval"] else "active")
+            res = db.create_user(username, password, role=role, status=status)
             if not res.get("ok"):
                 error = res.get("error")
             else:
+                db.add_log(res["id"], "login", "Account created")
+                if status == "pending":
+                    return redirect(url_for("login", notice="pending"))
                 row = db.get_user(res["id"])
-                sid = security.login_session(row, remember)
+                sid = security.login_session(row, bool(request.form.get("remember")))
                 db.touch_login(row["id"], sid)
-                db.add_log(row["id"], "login", "Signed in")
                 return redirect(url_for("dashboard"))
-        else:
-            row = db.verify_login(username, password)
-            if row == "disabled":
-                error = "This account is disabled."
-            elif not row:
-                error = "Incorrect username or password."
-            else:
-                sid = security.login_session(row, remember)
-                db.touch_login(row["id"], sid)
-                db.add_log(row["id"], "login", "Signed in")
-                nxt = request.args.get("next", "")
-                return redirect(nxt if nxt.startswith("/") else url_for("dashboard"))
 
-    return render_template("login.html", error=error, setup=setup)
+    return render_template("register.html", error=error, cfg=cfg, first=first, closed=False)
+
+
+@app.route("/forgot", methods=["GET", "POST"])
+@rate_limit(max_calls=8, per_seconds=120)
+def forgot():
+    link = None
+    done = False
+    if request.method == "POST":
+        row = db.get_by_username(request.form.get("username", ""))
+        done = True
+        if row:
+            token = db.create_reset_token(row["id"])
+            link = url_for("reset", token=token)
+            db.add_log(row["id"], "settings", "Password reset requested")
+    return render_template("forgot.html", link=link, done=done)
+
+
+@app.route("/reset/<token>", methods=["GET", "POST"])
+@rate_limit(max_calls=10, per_seconds=120)
+def reset(token):
+    row = db.get_reset(token)
+    if not row:
+        return render_template("reset.html", invalid=True)
+    error = None
+    if request.method == "POST":
+        pw = request.form.get("password", "")
+        if (perr := _password_error(pw)):
+            error = perr
+        elif pw != request.form.get("confirm", ""):
+            error = "Passwords do not match."
+        else:
+            db.set_password(row["user_id"], pw)
+            db.use_reset(token)
+            db.bump_epoch(row["user_id"])
+            db.add_log(row["user_id"], "settings", "Password reset completed")
+            return redirect(url_for("login", notice="reset"))
+    return render_template("reset.html", token=token, error=error, invalid=False)
 
 
 @app.route("/logout", methods=["GET", "POST"])
@@ -162,7 +257,8 @@ def dashboard():
         "dashboard.html",
         csrf_token=get_csrf_token(),
         username=session.get("username"),
-        is_admin=session.get("is_admin"),
+        is_admin=security.is_admin(),
+        role=session.get("role", "user"),
         tg_configured=service is not None and service.configured(),
     )
 
@@ -568,7 +664,10 @@ def api_users_disable():
     disabled = bool(d.get("disabled"))
     if uid == current_login_id():
         return jsonify({"ok": False, "error": "You cannot disable your own account."})
-    return jsonify(db.set_disabled(uid, disabled))
+    target = db.safe_user(db.get_user(uid))
+    if disabled and target and target["role"] == "admin" and len(_active_admins()) <= 1:
+        return jsonify({"ok": False, "error": "Cannot suspend the last admin."})
+    return jsonify(db.set_status(uid, "suspended" if disabled else "active"))
 
 
 @app.post("/api/users/password")
@@ -578,6 +677,116 @@ def api_users_disable():
 def api_users_password():
     d = request.get_json(silent=True) or {}
     return jsonify(db.set_password(int(d.get("id", 0)), d.get("password", "")))
+
+
+def _active_admins():
+    return [u for u in db.list_users() if u["role"] == "admin" and u["status"] == "active"]
+
+
+@app.post("/api/users/role")
+@admin_required
+@csrf_protect
+@rate_limit(max_calls=20, per_seconds=30)
+def api_users_role():
+    d = request.get_json(silent=True) or {}
+    uid = int(d.get("id", 0))
+    role = d.get("role")
+    if uid == current_login_id():
+        return jsonify({"ok": False, "error": "You cannot change your own role."})
+    target = db.safe_user(db.get_user(uid))
+    if target and target["role"] == "admin" and role != "admin" and len(_active_admins()) <= 1:
+        return jsonify({"ok": False, "error": "Cannot demote the last admin."})
+    return jsonify(db.set_role(uid, role))
+
+
+@app.post("/api/users/status")
+@admin_required
+@csrf_protect
+@rate_limit(max_calls=20, per_seconds=30)
+def api_users_status():
+    d = request.get_json(silent=True) or {}
+    uid = int(d.get("id", 0))
+    status = d.get("status")
+    if uid == current_login_id():
+        return jsonify({"ok": False, "error": "You cannot change your own status."})
+    target = db.safe_user(db.get_user(uid))
+    if target and target["role"] == "admin" and status == "suspended" and len(_active_admins()) <= 1:
+        return jsonify({"ok": False, "error": "Cannot suspend the last admin."})
+    return jsonify(db.set_status(uid, status))
+
+
+# --- registration settings / global stats / system logs (admin) ---
+@app.get("/api/admin/settings")
+@admin_required
+@rate_limit(max_calls=60, per_seconds=10)
+def api_admin_settings_get():
+    return jsonify(db.get_app_settings())
+
+
+@app.post("/api/admin/settings")
+@admin_required
+@csrf_protect
+@rate_limit(max_calls=30, per_seconds=30)
+def api_admin_settings_save():
+    d = request.get_json(silent=True) or {}
+    d.pop("csrf", None)
+    s = db.save_app_settings(d)
+    db.add_log(current_login_id(), "settings", "Updated platform settings")
+    return jsonify({"ok": True, "settings": s})
+
+
+@app.get("/api/admin/stats")
+@admin_required
+@rate_limit(max_calls=60, per_seconds=10)
+def api_admin_stats():
+    return jsonify(db.global_stats())
+
+
+@app.get("/api/admin/logs")
+@admin_required
+@rate_limit(max_calls=60, per_seconds=10)
+def api_admin_logs():
+    return jsonify({"logs": db.admin_logs()})
+
+
+# --- profile (self-service) ---
+@app.get("/api/account")
+@login_required
+@rate_limit(max_calls=60, per_seconds=10)
+def api_account():
+    return jsonify(db.safe_user(db.get_user(current_login_id())))
+
+
+@app.post("/api/account/logout_all")
+@login_required
+@csrf_protect
+@rate_limit(max_calls=10, per_seconds=60)
+def api_account_logout_all():
+    db.bump_epoch(current_login_id())
+    security.logout_session()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/account/delete")
+@login_required
+@csrf_protect
+@rate_limit(max_calls=6, per_seconds=60)
+def api_account_delete():
+    from werkzeug.security import check_password_hash
+    lid = current_login_id()
+    row = db.get_user(lid)
+    if not row or not check_password_hash(row["password_hash"], (request.get_json(silent=True) or {}).get("password", "")):
+        return jsonify({"ok": False, "error": "Password is incorrect."})
+    if db.safe_user(row)["role"] == "admin" and len(_active_admins()) <= 1:
+        return jsonify({"ok": False, "error": "The last admin cannot delete their account."})
+    if service is not None:
+        try:
+            service.logout(current_uid())
+        except Exception:
+            pass
+    db.delete_user(lid)
+    security.logout_session()
+    return jsonify({"ok": True})
 
 
 # ----------------------------------------------------------------------------

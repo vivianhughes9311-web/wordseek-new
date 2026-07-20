@@ -33,14 +33,11 @@
         </svg>
       </div>
 
-      {% if setup %}
-        <h1 class="login-title">Create your admin account</h1>
-        <p class="login-sub">This is the first account, so it becomes the administrator.</p>
-      {% else %}
-        <h1 class="login-title">Welcome back</h1>
-        <p class="login-sub">Sign in to your WordSeek dashboard.</p>
-      {% endif %}
+      <h1 class="login-title">Welcome back</h1>
+      <p class="login-sub">Sign in to your WordSeek dashboard.</p>
 
+      {% if notice == 'pending' %}<p class="login-msg ok" style="width:100%">Account created — it's awaiting admin approval.</p>{% endif %}
+      {% if notice == 'reset' %}<p class="login-msg ok" style="width:100%">Password updated. Sign in with your new password.</p>{% endif %}
       {% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}
 
       <label class="fld-label" for="username">Username</label>
@@ -49,13 +46,14 @@
 
       <label class="fld-label" for="password">Password</label>
       <input id="password" class="login-input" type="password" name="password" placeholder="••••••••"
-             autocomplete="{{ 'new-password' if setup else 'current-password' }}" minlength="6" required>
+             autocomplete="current-password" required>
 
-      {% if not setup %}
-        <label class="remember"><input type="checkbox" name="remember"> Remember me for 30 days</label>
-      {% endif %}
+      <label class="remember"><input type="checkbox" name="remember"> Remember me for 30 days</label>
 
-      <button class="login-btn" type="submit">{{ 'Create account' if setup else 'Sign in' }}</button>
+      <button class="login-btn" type="submit">Sign in</button>
+      <div class="login-links">
+        <a href="/register">Create an account</a><span>·</span><a href="/forgot">Forgot password?</a>
+      </div>
       <a class="login-back" href="/">← Back to the solver</a>
     </form>
   </div>

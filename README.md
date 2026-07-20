@@ -19,16 +19,33 @@ never block Flask and never take the web server down.
 > (it is the encryption key), treat the data volume as sensitive, and only run this in groups
 > where automation is allowed. You are responsible for how it is used.
 
-## How login works
+## Accounts, roles & registration
 
-The app uses **one app-level** `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` (you set these once,
-from <https://my.telegram.org>). Users never need their own API credentials — they only enter
-their **phone number**, then the **code** Telegram sends, and a **2FA password** if their
-account has one. The resulting session string is AES-encrypted (`crypto_store`, key derived
-from `SECRET_KEY`) and saved under `DATA_DIR`. It is never shown in the browser or logged.
+The platform is **multi-user**. Anyone can **register** at `/register`, log in at `/login`, and
+gets their own **private dashboard**. The **first account created becomes the admin**; everyone
+else is a normal user. There are two roles:
 
-Each browser gets a signed `uid` cookie = one account. Different people get different uids and
-their own isolated client, group, and autoplay engine.
+- **Normal user** — their own Telegram connection, groups, autoplay, messages, automation,
+  statistics, history, logs, theme and settings. Users never see another user's data (every
+  query is filtered by `user_id`).
+- **Admin** — everything a user has, plus an **Admin** area: user management (roles, approve,
+  suspend, reset passwords, delete), **Registration settings** (open/closed, invite code,
+  approval mode, max users, default role, per-user limits), **Global statistics** and
+  **System logs**. Admins never see users' Telegram secrets or session strings.
+
+Passwords are hashed with Werkzeug (scrypt); sessions are signed cookies with an idle timeout
+(30 days with "remember me"), CSRF on every POST, rate-limited login/registration, a session
+epoch (so "log out everywhere", password reset and suspension invalidate live sessions), and a
+username/password **forgot → reset** flow. Registration behaviour is admin-configurable
+(public on/off, invite code, admin approval, max users, terms).
+
+### Connecting Telegram
+
+Each user connects **their own** Telegram account from the dashboard, either with **phone +
+code** (using one app-level `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` you set from
+<https://my.telegram.org>) or by pasting their own **API ID / API hash / String Session**.
+The session is AES-encrypted (`crypto_store`, key derived from `SECRET_KEY`) and saved under
+`DATA_DIR` per `user_id`. It is never shown in the browser or logged.
 
 ## Autoplay (event-driven)
 

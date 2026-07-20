@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f4f1ff">
+  <meta name="color-scheme" content="light">
+  <title>WordSeek — Forgot password</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <div class="bg" aria-hidden="true">
+    <span class="blob blob-lav"></span><span class="blob blob-sky"></span>
+    <span class="blob blob-mint"></span><span class="blob blob-peach"></span>
+  </div>
+  <div class="login-wrap">
+    <form class="login-card card" method="post" action="/forgot">
+      <h1 class="login-title">Reset your password</h1>
+      <p class="login-sub">Enter your username to generate a reset link.</p>
+
+      {% if done %}
+        <p class="login-msg ok" style="width:100%">If that account exists, a reset link has been created.</p>
+        {% if link %}
+          <p class="login-sub" style="width:100%">Your reset link (this server has no email configured, so it is shown here — keep it private):</p>
+          <a class="reset-link" href="{{ link }}">{{ link }}</a>
+        {% endif %}
+      {% else %}
+        <label class="fld-label" for="username">Username</label>
+        <input id="username" class="login-input" name="username" type="text" placeholder="username" autocomplete="username" required autofocus>
+        <button class="login-btn" type="submit">Generate reset link</button>
+      {% endif %}
+
+      <a class="login-back" href="/login">← Back to sign in</a>
+    </form>
+  </div>
+</body>
+</html>

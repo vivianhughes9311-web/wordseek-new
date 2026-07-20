@@ -42,7 +42,7 @@
   /* ---------------- navigation ---------------- */
   const pages = [...document.querySelectorAll(".page")];
   const navItems = [...document.querySelectorAll(".nav-item")];
-  const titles = { dashboard: "Dashboard", telegram: "Telegram", groups: "Groups", autoplay: "Autoplay", messages: "Messages", automation: "Automation", history: "History", stats: "Statistics", logs: "Logs", users: "Users", settings: "Settings" };
+  const titles = { dashboard: "Dashboard", telegram: "Telegram", groups: "Groups", autoplay: "Autoplay", messages: "Messages", automation: "Automation", history: "History", stats: "Statistics", logs: "Logs", users: "Users", settings: "Settings", profile: "Profile", admin: "Admin Overview", registration: "Registration", syslogs: "System Logs" };
   function go(page) {
     pages.forEach((p) => { p.hidden = p.dataset.page !== page; });
     navItems.forEach((n) => n.classList.toggle("active", n.dataset.page === page));
@@ -56,6 +56,10 @@
     if (page === "stats") loadStats();
     if (page === "logs") loadLogs();
     if (page === "settings") { $("setUsername").value = ""; loadPrefs(); }
+    if (page === "profile") loadProfile();
+    if (page === "admin") loadAdminStats();
+    if (page === "registration") loadRegSettings();
+    if (page === "syslogs") loadSysLogs();
     location.hash = page;
   }
   navItems.forEach((n) => n.addEventListener("click", () => go(n.dataset.page)));
@@ -347,17 +351,28 @@
       const tr = document.createElement("tr");
       const c = (html) => { const td = document.createElement("td"); td.append(html); return td; };
       const name = document.createElement("b"); name.textContent = u.username;
-      const role = document.createElement("span"); role.className = "badge " + (u.is_admin ? "admin" : "user"); role.textContent = u.is_admin ? "admin" : "user";
-      const stat = document.createElement("span"); stat.className = "badge " + (u.disabled ? "off" : "on"); stat.textContent = u.disabled ? "disabled" : "active";
+      const role = document.createElement("span"); role.className = "badge " + (u.role === "admin" ? "admin" : "user"); role.textContent = u.role;
+      const scls = { active: "on", suspended: "off", pending: "warn" }[u.status] || "user";
+      const stat = document.createElement("span"); stat.className = "badge " + scls; stat.textContent = u.status;
       const last = document.createElement("span"); last.textContent = dt(u.last_login);
       const sess = document.createElement("span"); sess.className = "badge " + (u.active ? "live" : "user"); sess.textContent = u.active ? "● online" : "offline";
       const actions = document.createElement("div"); actions.className = "row-actions";
       if (u.id !== r.me) {
-        const dis = document.createElement("button"); dis.className = "btn small-btn"; dis.textContent = u.disabled ? "Enable" : "Disable";
-        dis.addEventListener("click", async () => { await api("/api/users/disable", { csrf: CSRF, id: u.id, disabled: !u.disabled }); loadUsers(); });
+        if (u.status === "pending") {
+          const ap = document.createElement("button"); ap.className = "btn small-btn btn-primary"; ap.textContent = "Approve";
+          ap.addEventListener("click", async () => { ack(await api("/api/users/status", { csrf: CSRF, id: u.id, status: "active" }), "Approved"); loadUsers(); });
+          actions.appendChild(ap);
+        }
+        const rl = document.createElement("select"); rl.className = "mini-select";
+        ["user", "admin"].forEach((v) => { const o = document.createElement("option"); o.value = v; o.textContent = v; rl.appendChild(o); });
+        rl.value = u.role;
+        rl.addEventListener("change", async () => { const res = await api("/api/users/role", { csrf: CSRF, id: u.id, role: rl.value }); ack(res, res && res.ok ? "Role updated" : null); loadUsers(); });
+        const sus = document.createElement("button"); sus.className = "btn small-btn";
+        sus.textContent = u.status === "suspended" ? "Activate" : "Suspend";
+        sus.addEventListener("click", async () => { ack(await api("/api/users/status", { csrf: CSRF, id: u.id, status: u.status === "suspended" ? "active" : "suspended" }), "Updated"); loadUsers(); });
         const del = document.createElement("button"); del.className = "icon-btn"; del.textContent = "✕"; del.title = "Delete";
-        del.addEventListener("click", async () => { if (confirm(`Delete user ${u.username}?`)) { ack(await api("/api/users/delete", { csrf: CSRF, id: u.id }), "Deleted"); loadUsers(); } });
-        actions.append(dis, del);
+        del.addEventListener("click", async () => { if (confirm(`Delete user ${u.username}? This removes all their data.`)) { ack(await api("/api/users/delete", { csrf: CSRF, id: u.id }), "Deleted"); loadUsers(); } });
+        actions.append(rl, sus, del);
       } else { const meb = document.createElement("span"); meb.className = "muted small"; meb.textContent = "you"; actions.appendChild(meb); }
       tr.append(c(name), c(role), c(stat), c(last), c(sess), c(actions)); tb.appendChild(tr);
     });
@@ -509,6 +524,60 @@
   }
   $("animSpeed").addEventListener("change", async () => { applyAnim($("animSpeed").value); ack(await api("/api/prefs", { csrf: CSRF, anim_speed: $("animSpeed").value }), "Saved"); });
   $("soundToggle").addEventListener("change", async () => { SOUND = $("soundToggle").checked; await api("/api/prefs", { csrf: CSRF, sound: SOUND }); if (SOUND) toast("Sound on", "info"); });
+
+  /* ---------------- Profile ---------------- */
+  async function loadProfile() {
+    const a = await api("/api/account"); if (!a) return;
+    $("pfName").textContent = a.username || "—";
+    $("pfRole").textContent = a.role || "user";
+    $("pfSince").textContent = dt(a.created_at);
+    $("pfLast").textContent = dt(a.last_login);
+  }
+  $("logoutAllBtn").addEventListener("click", async () => {
+    if (!confirm("Log out of all sessions, including this one?")) return;
+    const r = await api("/api/account/logout_all", { csrf: CSRF });
+    if (r && r.ok) { toast("Logged out everywhere"); setTimeout(() => (window.location.href = "/login"), 700); }
+  });
+  $("deleteAccountBtn").addEventListener("click", async () => {
+    const pw = $("delPass").value; if (!pw) return toast("Enter your password", "error");
+    if (!confirm("Permanently delete your account and ALL its data? This cannot be undone.")) return;
+    const r = await api("/api/account/delete", { csrf: CSRF, password: pw });
+    if (r && r.ok) { toast("Account deleted"); setTimeout(() => (window.location.href = "/login"), 800); } else ack(r);
+  });
+
+  /* ---------------- Admin: overview / registration / system logs ---------------- */
+  async function loadAdminStats() {
+    if (!IS_ADMIN) return; const s = await api("/api/admin/stats"); if (!s) return;
+    const tiles = [["Users", s.users], ["Online now", s.online], ["Admins", s.admins],
+      ["Pending", s.pending], ["Suspended", s.suspended],
+      ["Games played", s.games], ["Wins", s.wins], ["Win rate", s.win_rate + "%"]];
+    const box = $("adminTiles"); box.innerHTML = "";
+    tiles.forEach(([label, val]) => { const d = document.createElement("div"); d.className = "stat-tile card"; const b = document.createElement("b"); b.textContent = val; const sm = document.createElement("small"); sm.textContent = label; d.append(b, sm); box.appendChild(d); });
+  }
+  const reg = { open: $("regOpen"), approval: $("regApproval"), invite: $("regInvite"), terms: $("regTerms"), code: $("regInviteCode"), maxUsers: $("regMaxUsers"), role: $("regDefaultRole"), gGroups: $("limGroups"), gTelegram: $("limTelegram"), gAutoplay: $("limAutoplay") };
+  async function loadRegSettings() {
+    if (!IS_ADMIN) return; const s = await api("/api/admin/settings"); if (!s) return;
+    reg.open.checked = !!s.registration_open; reg.approval.checked = !!s.require_approval;
+    reg.invite.checked = !!s.require_invite; reg.terms.checked = !!s.terms_required;
+    reg.code.value = s.invite_code || ""; reg.maxUsers.value = s.max_users; reg.role.value = s.default_role;
+    reg.gGroups.value = s.max_groups; reg.gTelegram.value = s.max_telegram; reg.gAutoplay.value = s.max_autoplay;
+  }
+  $("regSaveBtn").addEventListener("click", async () => {
+    ack(await api("/api/admin/settings", { csrf: CSRF, registration_open: reg.open.checked, require_approval: reg.approval.checked, require_invite: reg.invite.checked, terms_required: reg.terms.checked, invite_code: reg.code.value, max_users: +reg.maxUsers.value, default_role: reg.role.value, max_groups: +reg.gGroups.value, max_telegram: +reg.gTelegram.value, max_autoplay: +reg.gAutoplay.value }), "Platform settings saved");
+  });
+  async function loadSysLogs() {
+    if (!IS_ADMIN) return; const r = await api("/api/admin/logs"); const ul = $("sysLogList"); ul.innerHTML = "";
+    if (!r || !r.logs || !r.logs.length) { const li = document.createElement("li"); li.className = "empty"; li.textContent = "No logs yet."; ul.appendChild(li); return; }
+    r.logs.forEach((e) => {
+      const li = document.createElement("li"); li.className = "log-row";
+      const t = document.createElement("span"); t.className = "t"; t.textContent = dt(e.ts);
+      const cat = document.createElement("span"); cat.className = "logcat cat-" + e.category; cat.textContent = e.category;
+      const who = document.createElement("b"); who.className = "logwho"; who.textContent = e.username;
+      const m = document.createElement("span"); m.className = "m"; m.textContent = e.text;
+      li.append(t, cat, who, m); ul.appendChild(li);
+    });
+  }
+  $("sysRefresh").addEventListener("click", loadSysLogs);
 
   /* ---------------- boot ---------------- */
   applyTheme(localStorage.getItem("ws.theme") || "cute");   // instant, before network

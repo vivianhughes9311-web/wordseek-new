@@ -49,8 +49,13 @@
         <button class="nav-item" data-page="history"><span class="ni">🎞️</span> History</button>
         <button class="nav-item" data-page="stats"><span class="ni">📊</span> Statistics</button>
         <button class="nav-item" data-page="logs"><span class="ni">📜</span> Logs</button>
-        <button class="nav-item admin-only" data-page="users" hidden><span class="ni">👤</span> Users</button>
+        <button class="nav-item" data-page="profile"><span class="ni">🙋</span> Profile</button>
         <button class="nav-item" data-page="settings"><span class="ni">⚙️</span> Settings</button>
+        <div class="nav-sep admin-only" hidden>Admin</div>
+        <button class="nav-item admin-only" data-page="admin" hidden><span class="ni">🛡️</span> Overview</button>
+        <button class="nav-item admin-only" data-page="users" hidden><span class="ni">👤</span> Users</button>
+        <button class="nav-item admin-only" data-page="registration" hidden><span class="ni">📝</span> Registration</button>
+        <button class="nav-item admin-only" data-page="syslogs" hidden><span class="ni">🗂️</span> System Logs</button>
       </nav>
 
       <div class="side-foot">
@@ -430,6 +435,80 @@
               <div class="btn-row"><button class="btn btn-primary" id="savePasswordBtn">Update password</button></div>
             </section>
           </div>
+        </section>
+
+        <!-- ===== Profile ===== -->
+        <section class="page" data-page="profile" hidden>
+          <div class="grid-2">
+            <section class="card dash-card">
+              <div class="dash-card-head"><h2>🙋 Your profile</h2></div>
+              <dl class="kv">
+                <div><dt>Username</dt><dd id="pfName">—</dd></div>
+                <div><dt>Role</dt><dd id="pfRole">—</dd></div>
+                <div><dt>Member since</dt><dd id="pfSince">—</dd></div>
+                <div><dt>Last login</dt><dd id="pfLast">—</dd></div>
+              </dl>
+            </section>
+            <section class="card dash-card">
+              <div class="dash-card-head"><h2>🔒 Sessions &amp; account</h2></div>
+              <p class="muted small">Sign out of every device, or permanently delete your account and all its data.</p>
+              <div class="btn-row"><button class="btn" id="logoutAllBtn">Log out of all sessions</button></div>
+              <hr class="soft-hr">
+              <label class="fld-label" for="delPass">Confirm password to delete account</label>
+              <div class="field-inline">
+                <input id="delPass" class="txt" type="password" placeholder="password">
+                <button class="btn btn-danger" id="deleteAccountBtn">Delete account</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <!-- ===== Admin Overview ===== -->
+        <section class="page" data-page="admin" hidden>
+          <div class="stat-tiles" id="adminTiles"></div>
+        </section>
+
+        <!-- ===== Registration Settings + Limits ===== -->
+        <section class="page" data-page="registration" hidden>
+          <div class="grid-2">
+            <section class="card dash-card">
+              <div class="dash-card-head"><h2>📝 Registration</h2></div>
+              <div class="cfg-checks">
+                <label class="chk"><input type="checkbox" id="regOpen"> Public registration open</label>
+                <label class="chk"><input type="checkbox" id="regApproval"> Require admin approval</label>
+                <label class="chk"><input type="checkbox" id="regInvite"> Require invite code</label>
+                <label class="chk"><input type="checkbox" id="regTerms"> Require terms acceptance</label>
+              </div>
+              <div class="field-inline"><label class="muted small" for="regInviteCode">Invite code</label>
+                <input id="regInviteCode" class="txt small-txt" type="text" placeholder="(optional)"></div>
+              <div class="cfg-grid">
+                <label>Max users (0 = ∞) <input class="num" type="number" id="regMaxUsers" min="0"></label>
+                <label>Default role
+                  <select class="select" id="regDefaultRole"><option value="user">User</option><option value="admin">Admin</option></select>
+                </label>
+              </div>
+            </section>
+            <section class="card dash-card">
+              <div class="dash-card-head"><h2>📐 Per-user limits</h2></div>
+              <div class="cfg-grid">
+                <label>Max groups <input class="num" type="number" id="limGroups" min="0"></label>
+                <label>Max Telegram accounts <input class="num" type="number" id="limTelegram" min="1"></label>
+                <label>Max autoplay sessions <input class="num" type="number" id="limAutoplay" min="1"></label>
+              </div>
+              <p class="muted small">Limits apply to newly created accounts and future connections.</p>
+            </section>
+          </div>
+          <div class="btn-row"><button class="btn btn-primary" id="regSaveBtn">Save platform settings</button></div>
+        </section>
+
+        <!-- ===== System Logs (admin) ===== -->
+        <section class="page" data-page="syslogs" hidden>
+          <section class="card dash-card">
+            <div class="dash-card-head"><h2>🗂️ System logs</h2>
+              <button class="btn small-btn" id="sysRefresh">Refresh</button></div>
+            <p class="muted small">All users' activity. Telegram secrets and session strings are never logged.</p>
+            <ul id="sysLogList" class="log-rows"></ul>
+          </section>
         </section>
       </div>
     </div>
