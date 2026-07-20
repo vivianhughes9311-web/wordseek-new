@@ -78,6 +78,7 @@ class AutoplayEngine:
         self.game_limit = None
 
         self.sent_keys = set()
+        self.game_guesses = []      # words WE sent this game (for replay)
         self._pending_key = None
         self._flood_retries = 0
         self.timeline = []
@@ -320,6 +321,7 @@ class AutoplayEngine:
         self.last_board_key = None
         self.repeat_count = 0
         self.sent_keys.clear()
+        self.game_guesses = []
         self._pending_key = None
         self.last_guess = None
         self.next_guess = None
@@ -338,7 +340,8 @@ class AutoplayEngine:
         note = "" if by_us else " (solved by another player)"
         self._timeline("win", f"WON in {self.guess_number} guesses{note}")
         self._history({"result": "won", "word": self.result_word, "guesses": self.guess_number,
-                       "seconds": self.result_seconds, "mode": self.mode, "by_us": by_us})
+                       "seconds": self.result_seconds, "mode": self.mode, "by_us": by_us,
+                       "board": self.current_board_text, "guess_list": list(self.game_guesses)})
         if self.config.get("auto_stop_after_game"):
             self.running = False
 
@@ -347,7 +350,8 @@ class AutoplayEngine:
         self.result_seconds = round(self._now() - self.game_start_ts, 1) if self.game_start_ts else None
         self._timeline("loss", f"Game lost — {reason}")
         self._history({"result": "lost", "word": (self.last_guess or "").upper(), "guesses": self.guess_number,
-                       "seconds": self.result_seconds, "mode": self.mode, "by_us": False})
+                       "seconds": self.result_seconds, "mode": self.mode, "by_us": False,
+                       "board": self.current_board_text, "guess_list": list(self.game_guesses)})
         if self.config.get("auto_stop_after_game"):
             self.running = False
 
@@ -412,6 +416,7 @@ class AutoplayEngine:
                 self.sent_keys.add(board_key)
                 self.guess_number += 1
                 self.last_guess = word
+                self.game_guesses.append(word.upper())
                 self._cooldown_until = self._now() + int(self.config.get("cooldown_ms", 4000)) / 1000.0
                 self.state = WAITING_FOR_UPDATE
                 self._pending_key = None

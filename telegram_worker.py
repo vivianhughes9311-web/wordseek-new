@@ -44,6 +44,13 @@ except Exception as exc:  # pragma: no cover
 logging.getLogger("telethon").setLevel(logging.WARNING)
 
 
+_LOG_CAT = {
+    "send": "guess", "guess": "guess", "automation": "automation",
+    "error": "error", "win": "autoplay", "loss": "autoplay",
+    "board": "autoplay", "system": "system",
+}
+
+
 def _now():
     return time.time()
 
@@ -87,6 +94,7 @@ class UserRuntime:
         self.automation = Automation(
             send=lambda text: self.service._send_text(self, text),
             get_messages=lambda: db.message_texts(self.user_id) if self.user_id else [],
+            get_weighted=lambda: db.message_weighted(self.user_id) if self.user_id else [],
             get_settings=lambda: db.get_msg_settings(self.user_id) if self.user_id else {},
             get_rules=lambda: db.list_rules(self.user_id) if self.user_id else [],
             engine=self.engine,
@@ -100,12 +108,25 @@ class UserRuntime:
         self.activity.append(entry)
         self.data["activity"] = list(self.activity)
         user_store.save(self.uid, self.data)
+        if self.user_id:
+            try:
+                db.add_log(self.user_id, _LOG_CAT.get(kind, "system"), text)
+            except Exception:
+                pass
 
     def _on_history(self, entry):
-        entry = {"ts": _now(), "type": entry.get("result", "game"),
-                 "text": f"{entry.get('result','?').upper()}: {entry.get('word','')} "
-                         f"in {entry.get('guesses','?')} guesses"}
-        self.activity.append(entry)
+        # persist the completed game for History/Replay + Statistics
+        if self.user_id:
+            try:
+                db.record_game(self.user_id, self.data.get("group_name"), entry.get("mode"),
+                               entry.get("result"), entry.get("guesses"), entry.get("seconds"),
+                               entry.get("word"), entry.get("board"), entry.get("guess_list"))
+            except Exception:
+                pass
+        summary = {"ts": _now(), "type": entry.get("result", "game"),
+                   "text": f"{str(entry.get('result', '?')).upper()}: {entry.get('word', '')} "
+                           f"in {entry.get('guesses', '?')} guesses"}
+        self.activity.append(summary)
         self.data["activity"] = list(self.activity)
         user_store.save(self.uid, self.data)
 
@@ -310,13 +331,60 @@ class TelegramService:
         return {"ok": True, "next": "done", "account": name}
 
     # ------------------------------------------------------------------ #
+    # connect via a user-supplied String Session (own API id/hash)
+    # ------------------------------------------------------------------ #
+    def login_string(self, uid, api_id, api_hash, string_session):
+        if not TELETHON_AVAILABLE:
+            return {"ok": False, "error": "Telethon is not installed."}
+        try:
+            aid = int(api_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "API ID must be a number."}
+        api_hash = str(api_hash or "").strip()
+        ss = str(string_session or "").strip()
+        if not api_hash or not ss:
+            return {"ok": False, "error": "API hash and string session are required."}
+        try:
+            return self._submit(self._login_string(uid, aid, api_hash, ss), timeout=60)
+        except Exception:
+            return {"ok": False, "error": "Could not connect with that session."}
+
+    async def _login_string(self, uid, api_id, api_hash, ss):
+        try:
+            client = TelegramClient(StringSession(ss), api_id, api_hash)
+            await client.connect()
+            if not await client.is_user_authorized():
+                return {"ok": False, "error": "That string session is not authorized."}
+            me = await client.get_me()
+            name = getattr(me, "first_name", None) or getattr(me, "username", None) or "account"
+        except Exception:
+            return {"ok": False, "error": "Invalid API credentials or string session."}
+        rt = self.get_runtime(uid)
+        rt.data["session_enc"] = crypto_store.encrypt(ss)
+        rt.data["account_name"] = name
+        rt.data["phone_masked"] = "string session"
+        rt.data["api_id"] = api_id
+        rt.data["api_hash_enc"] = crypto_store.encrypt(api_hash)
+        user_store.save(uid, rt.data)
+        rt.client = client
+        rt.connected = True
+        rt.authorized = True
+        rt.account_name = name
+        rt.phone_masked = "string session"
+        self._register_handler(rt)
+        rt._on_activity("system", "Telegram connected (string session)")
+        return {"ok": True, "next": "done", "account": name}
+
+    # ------------------------------------------------------------------ #
     # reconnect from stored session (used after restarts)
     # ------------------------------------------------------------------ #
     def ensure_connected(self, uid):
         rt = self.get_runtime(uid)
-        if not self.configured() or rt.connected or rt._connecting:
+        if rt.connected or rt._connecting or not TELETHON_AVAILABLE:
             return
-        if not rt.data.get("session_enc"):
+        # need a stored session and either app-level or per-user API credentials
+        has_creds = self.configured() or bool(rt.data.get("api_id"))
+        if not has_creds or not rt.data.get("session_enc"):
             return
         rt._connecting = True
         asyncio.run_coroutine_threadsafe(self._connect_stored(rt), self.loop)
@@ -329,7 +397,10 @@ class TelegramService:
                 rt.data["session_enc"] = None
                 user_store.save(rt.uid, rt.data)
                 return
-            client = TelegramClient(StringSession(session_str), self.api_id, self.api_hash)
+            api_id = rt.data.get("api_id") or self.api_id
+            api_hash = (crypto_store.decrypt(rt.data.get("api_hash_enc"))
+                        if rt.data.get("api_hash_enc") else self.api_hash)
+            client = TelegramClient(StringSession(session_str), api_id, api_hash)
             await client.connect()
             if not await client.is_user_authorized():
                 rt._set_error("Session expired. Please re-login.")
@@ -513,7 +584,7 @@ class TelegramService:
     def status(self, uid):
         rt = self.get_runtime(uid)
         # opportunistically reconnect a stored session after a restart
-        if self.configured() and not rt.connected and rt.data.get("session_enc"):
+        if not rt.connected and rt.data.get("session_enc"):
             self.ensure_connected(uid)
         return {
             "available": TELETHON_AVAILABLE,

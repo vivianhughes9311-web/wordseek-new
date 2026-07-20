@@ -42,10 +42,13 @@
       <nav class="side-nav" role="tablist">
         <button class="nav-item active" data-page="dashboard"><span class="ni">🏠</span> Dashboard</button>
         <button class="nav-item" data-page="telegram"><span class="ni">🤖</span> Telegram <span class="dot" id="navTgDot"></span></button>
+        <button class="nav-item" data-page="groups"><span class="ni">👥</span> Groups</button>
         <button class="nav-item" data-page="autoplay"><span class="ni">🎯</span> Autoplay</button>
-        <button class="nav-item" data-page="messages"><span class="ni">💬</span> Custom Messages</button>
+        <button class="nav-item" data-page="messages"><span class="ni">💬</span> Messages</button>
         <button class="nav-item" data-page="automation"><span class="ni">⚙️</span> Automation</button>
-        <button class="nav-item" data-page="logs"><span class="ni">📜</span> Activity Logs</button>
+        <button class="nav-item" data-page="history"><span class="ni">🎞️</span> History</button>
+        <button class="nav-item" data-page="stats"><span class="ni">📊</span> Statistics</button>
+        <button class="nav-item" data-page="logs"><span class="ni">📜</span> Logs</button>
         <button class="nav-item admin-only" data-page="users" hidden><span class="ni">👤</span> Users</button>
         <button class="nav-item" data-page="settings"><span class="ni">⚙️</span> Settings</button>
       </nav>
@@ -104,28 +107,50 @@
             <p class="consent">You're signing in to <b>your own</b> Telegram account. The session is stored
               <b>encrypted</b> on the server and never shown in the browser. Automating a game bot can violate
               Telegram / bot rules and may get accounts limited — use sensible delays.</p>
-            <div id="stepPhone" class="login-step">
-              <label class="fld-label" for="phoneInput">Phone number (international format)</label>
-              <div class="field-inline">
-                <input id="phoneInput" class="txt" type="tel" inputmode="tel" placeholder="+15551234567">
-                <button class="btn btn-primary" id="sendCodeBtn">Send code</button>
+
+            <div class="seg" id="connMethod" role="radiogroup" aria-label="Connect method">
+              <label class="seg-opt"><input type="radio" name="connMethod" value="phone" id="mPhone" checked> Phone + code</label>
+              <label class="seg-opt"><input type="radio" name="connMethod" value="string" id="mString"> String session</label>
+            </div>
+
+            <div id="methodPhone">
+              <div id="stepPhone" class="login-step">
+                <label class="fld-label" for="phoneInput">Phone number (international format)</label>
+                <div class="field-inline">
+                  <input id="phoneInput" class="txt" type="tel" inputmode="tel" placeholder="+15551234567">
+                  <button class="btn btn-primary" id="sendCodeBtn">Send code</button>
+                </div>
+              </div>
+              <div id="stepCode" class="login-step" hidden>
+                <label class="fld-label" for="codeInput">Enter the code Telegram sent you</label>
+                <div class="field-inline">
+                  <input id="codeInput" class="txt" type="text" inputmode="numeric" placeholder="12345" autocomplete="one-time-code">
+                  <button class="btn btn-primary" id="signInBtn">Verify</button>
+                  <button class="btn" id="restartBtn" type="button">Restart</button>
+                </div>
+              </div>
+              <div id="stepPassword" class="login-step" hidden>
+                <label class="fld-label" for="passwordInput">Two-step (2FA) password</label>
+                <div class="field-inline">
+                  <input id="passwordInput" class="txt" type="password" placeholder="Your Telegram password">
+                  <button class="btn btn-primary" id="passwordBtn">Confirm</button>
+                </div>
               </div>
             </div>
-            <div id="stepCode" class="login-step" hidden>
-              <label class="fld-label" for="codeInput">Enter the code Telegram sent you</label>
+
+            <div id="methodString" hidden>
+              <label class="fld-label" for="ssApiId">API ID &amp; API hash (from my.telegram.org)</label>
               <div class="field-inline">
-                <input id="codeInput" class="txt" type="text" inputmode="numeric" placeholder="12345" autocomplete="one-time-code">
-                <button class="btn btn-primary" id="signInBtn">Verify</button>
-                <button class="btn" id="restartBtn" type="button">Restart</button>
+                <input id="ssApiId" class="txt" type="text" inputmode="numeric" placeholder="API ID" style="max-width:140px">
+                <input id="ssApiHash" class="txt" type="text" placeholder="API hash">
+              </div>
+              <label class="fld-label" for="ssSession">String session</label>
+              <div class="field-inline">
+                <input id="ssSession" class="txt" type="password" placeholder="1AAAA… (kept encrypted, never shown)">
+                <button class="btn btn-primary" id="ssConnectBtn">Connect</button>
               </div>
             </div>
-            <div id="stepPassword" class="login-step" hidden>
-              <label class="fld-label" for="passwordInput">Two-step (2FA) password</label>
-              <div class="field-inline">
-                <input id="passwordInput" class="txt" type="password" placeholder="Your Telegram password">
-                <button class="btn btn-primary" id="passwordBtn">Confirm</button>
-              </div>
-            </div>
+
             <p id="loginMsg" class="login-msg" role="alert" hidden></p>
           </section>
 
@@ -243,6 +268,7 @@
               <div class="seg" role="radiogroup" aria-label="Selection mode">
                 <label class="seg-opt"><input type="radio" name="msgMode" value="random" id="modeRandom"> Random</label>
                 <label class="seg-opt"><input type="radio" name="msgMode" value="sequential" id="modeSeq"> Sequential</label>
+                <label class="seg-opt"><input type="radio" name="msgMode" value="weighted" id="modeWeighted"> Weighted</label>
               </div>
               <div class="cfg-grid">
                 <label>Delay before sending (ms) <input class="num" type="number" id="msgDelay" min="0" max="20000" step="100"></label>
@@ -297,14 +323,65 @@
           </div>
         </section>
 
-        <!-- ===== Activity Logs ===== -->
-        <section class="page" data-page="logs" hidden>
-          <div class="grid-2">
-            <section class="card dash-card"><div class="dash-card-head"><h2>📜 Activity</h2></div>
-              <ul id="activityLog" class="log"></ul></section>
-            <section class="card dash-card"><div class="dash-card-head"><h2>🚨 Errors</h2></div>
-              <ul id="errorLog" class="log log-error"></ul></section>
+        <!-- ===== Groups ===== -->
+        <section class="page" data-page="groups" hidden>
+          <section class="card dash-card">
+            <div class="dash-card-head"><h2>👥 Your groups</h2>
+              <button class="btn small-btn" id="grpLoadBtn">Load groups</button>
+            </div>
+            <p class="muted small">Pick the group autoplay should watch. The selected group is highlighted and used for all autoplay, messages and automation.</p>
+            <div id="grpTarget" class="grp-target" hidden></div>
+            <ul id="grpList" class="grp-list"></ul>
+          </section>
+        </section>
+
+        <!-- ===== History / Replay ===== -->
+        <section class="page" data-page="history" hidden>
+          <section class="card dash-card">
+            <div class="dash-card-head"><h2>🎞️ Game history</h2>
+              <button class="btn small-btn" id="histRefresh">Refresh</button></div>
+            <ul id="histList" class="hist-games"></ul>
+          </section>
+          <div id="replayModal" class="modal" hidden>
+            <div class="modal-backdrop" data-close></div>
+            <div class="modal-card card">
+              <div class="modal-head"><h3 id="replayTitle">Replay</h3><button class="btn small-btn" data-close>✕</button></div>
+              <div id="replayBody"></div>
+            </div>
           </div>
+        </section>
+
+        <!-- ===== Statistics ===== -->
+        <section class="page" data-page="stats" hidden>
+          <div class="stat-tiles" id="statTiles"></div>
+          <section class="card dash-card">
+            <div class="dash-card-head"><h2>📊 Last 14 days</h2><span class="muted small">games &amp; wins</span></div>
+            <div id="statChart" class="stat-chart"></div>
+          </section>
+        </section>
+
+        <!-- ===== Logs (searchable) ===== -->
+        <section class="page" data-page="logs" hidden>
+          <section class="card dash-card">
+            <div class="dash-card-head"><h2>📜 Logs</h2></div>
+            <div class="log-controls">
+              <select id="logCategory" class="select">
+                <option value="">All categories</option>
+                <option value="login">Login</option>
+                <option value="telegram">Telegram</option>
+                <option value="guess">Guesses</option>
+                <option value="autoplay">Autoplay</option>
+                <option value="automation">Automation</option>
+                <option value="settings">Settings</option>
+                <option value="warning">Warnings</option>
+                <option value="error">Errors</option>
+                <option value="system">System</option>
+              </select>
+              <input id="logSearch" class="txt" type="search" placeholder="Search logs…">
+              <button class="btn" id="logRefresh">Search</button>
+            </div>
+            <ul id="logList" class="log-rows"></ul>
+          </section>
         </section>
 
         <!-- ===== Users (admin) ===== -->
@@ -326,6 +403,17 @@
 
         <!-- ===== Settings ===== -->
         <section class="page" data-page="settings" hidden>
+          <section class="card dash-card">
+            <div class="dash-card-head"><h2>🎨 Appearance</h2></div>
+            <label class="fld-label">Theme</label>
+            <div id="themeSwatches" class="theme-swatches"></div>
+            <div class="cfg-grid" style="margin-top:14px">
+              <label>Animation speed
+                <select id="animSpeed" class="select"><option value="off">Off</option><option value="slow">Slow</option><option value="normal">Normal</option><option value="fast">Fast</option></select>
+              </label>
+              <label class="chk" style="align-self:end"><input type="checkbox" id="soundToggle"> Notification sound</label>
+            </div>
+          </section>
           <div class="grid-2">
             <section class="card dash-card">
               <div class="dash-card-head"><h2>Change username</h2></div>

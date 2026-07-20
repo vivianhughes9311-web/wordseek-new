@@ -10,6 +10,7 @@
   const CSRF = document.querySelector('meta[name="csrf"]').content;
   const IS_ADMIN = document.querySelector('meta[name="is-admin"]').content === "1";
   const toastStack = $("toastStack");
+  let SOUND = false;
 
   async function api(path, body, method) {
     const opt = { method: method || (body ? "POST" : "GET"), headers: {} };
@@ -22,6 +23,7 @@
     return data;
   }
   function toast(msg, kind = "success") {
+    if (SOUND) { try { beep(kind); } catch {} }
     const el = document.createElement("div"); el.className = `toast ${kind}`;
     const i = document.createElement("span"); i.className = "toast-icon";
     i.textContent = kind === "error" ? "!" : kind === "info" ? "i" : "✓";
@@ -40,7 +42,7 @@
   /* ---------------- navigation ---------------- */
   const pages = [...document.querySelectorAll(".page")];
   const navItems = [...document.querySelectorAll(".nav-item")];
-  const titles = { dashboard: "Dashboard", telegram: "Telegram", autoplay: "Autoplay", messages: "Custom Messages", automation: "Automation", logs: "Activity Logs", users: "Users", settings: "Settings" };
+  const titles = { dashboard: "Dashboard", telegram: "Telegram", groups: "Groups", autoplay: "Autoplay", messages: "Messages", automation: "Automation", history: "History", stats: "Statistics", logs: "Logs", users: "Users", settings: "Settings" };
   function go(page) {
     pages.forEach((p) => { p.hidden = p.dataset.page !== page; });
     navItems.forEach((n) => n.classList.toggle("active", n.dataset.page === page));
@@ -49,7 +51,11 @@
     if (page === "messages") loadMessages();
     if (page === "automation") loadRules();
     if (page === "users") loadUsers();
-    if (page === "settings") $("setUsername").value = "";
+    if (page === "groups") loadGroupsPage();
+    if (page === "history") loadHistory();
+    if (page === "stats") loadStats();
+    if (page === "logs") loadLogs();
+    if (page === "settings") { $("setUsername").value = ""; loadPrefs(); }
     location.hash = page;
   }
   navItems.forEach((n) => n.addEventListener("click", () => go(n.dataset.page)));
@@ -184,9 +190,6 @@
       cfg.max.value = c.max_guesses; cfg.delay.value = c.delay_ms; cfg.cooldown.value = c.cooldown_ms; cfg.conf.value = c.min_confidence; cfg.repeat.value = c.max_repeat;
       cfg.autoStart.checked = !!c.auto_start_on_new_game; cfg.autoStop.checked = !!c.auto_stop_after_game; cfg.sendCmd.checked = !!c.send_new_game_command; cfg.cmd.value = c.new_game_command || "/new";
     }
-    // logs
-    logList($("activityLog"), (ap.timeline || []).concat(st.activity || []).slice(0, 40), "No activity yet");
-    logList($("errorLog"), st.errors || [], "No errors 🎉");
   }
 
   /* ---------------- custom messages ---------------- */
@@ -198,7 +201,7 @@
     const s = r.settings || {};
     mset.enabled.checked = !!s.enabled; mset.delay.value = s.delay_ms; mset.max.value = s.max_messages;
     mset.onNew.checked = !!s.on_new_game; mset.every.checked = !!s.after_every_game; mset.wins.checked = !!s.only_wins; mset.losses.checked = !!s.only_losses;
-    $(s.mode === "sequential" ? "modeSeq" : "modeRandom").checked = true;
+    $(s.mode === "sequential" ? "modeSeq" : s.mode === "weighted" ? "modeWeighted" : "modeRandom").checked = true;
   }
   function renderMessages() {
     const ul = $("msgList"); ul.innerHTML = "";
@@ -208,9 +211,14 @@
       const h = document.createElement("span"); h.className = "drag-handle"; h.textContent = "⠿";
       const inp = document.createElement("input"); inp.className = "msg-text"; inp.value = m.text; inp.maxLength = 300;
       inp.addEventListener("change", async () => { ack(await api("/api/messages/update", { csrf: CSRF, id: m.id, text: inp.value }), "Saved"); });
+      const wl = document.createElement("span"); wl.className = "wlbl"; wl.textContent = "×";
+      const wt = document.createElement("input"); wt.className = "msg-weight"; wt.type = "number"; wt.min = 1; wt.max = 20; wt.value = m.weight || 1; wt.title = "Weight (weighted mode)";
+      wt.addEventListener("change", async () => { await api("/api/messages/update", { csrf: CSRF, id: m.id, weight: +wt.value }); });
+      const dup = document.createElement("button"); dup.className = "icon-btn"; dup.textContent = "⧉"; dup.title = "Duplicate";
+      dup.addEventListener("click", async () => { await api("/api/messages/duplicate", { csrf: CSRF, id: m.id }); loadMessages(); });
       const del = document.createElement("button"); del.className = "icon-btn"; del.textContent = "✕"; del.title = "Delete";
       del.addEventListener("click", async () => { await api("/api/messages/delete", { csrf: CSRF, id: m.id }); loadMessages(); });
-      li.append(h, inp, del);
+      li.append(h, inp, wl, wt, dup, del);
       li.addEventListener("dragstart", () => li.classList.add("dragging"));
       li.addEventListener("dragend", () => { li.classList.remove("dragging"); persistOrder(); });
       li.addEventListener("dragover", (e) => { e.preventDefault(); const dragging = ul.querySelector(".dragging"); if (!dragging || dragging === li) return; const rect = li.getBoundingClientRect(); const after = e.clientY > rect.top + rect.height / 2; ul.insertBefore(dragging, after ? li.nextSibling : li); });
@@ -227,7 +235,8 @@
   });
   $("newMsgInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("addMsgBtn").click(); });
   $("msgSaveBtn").addEventListener("click", async () => {
-    ack(await api("/api/messages/settings", { csrf: CSRF, enabled: mset.enabled.checked, mode: $("modeSeq").checked ? "sequential" : "random", delay_ms: +mset.delay.value, max_messages: +mset.max.value, on_new_game: mset.onNew.checked, after_every_game: mset.every.checked, only_wins: mset.wins.checked, only_losses: mset.losses.checked }), "Settings saved");
+    const mode = $("modeWeighted").checked ? "weighted" : $("modeSeq").checked ? "sequential" : "random";
+    ack(await api("/api/messages/settings", { csrf: CSRF, enabled: mset.enabled.checked, mode, delay_ms: +mset.delay.value, max_messages: +mset.max.value, on_new_game: mset.onNew.checked, after_every_game: mset.every.checked, only_wins: mset.wins.checked, only_losses: mset.losses.checked }), "Settings saved");
   });
   $("previewBtn").addEventListener("click", () => {
     const out = $("previewOut");
@@ -369,8 +378,142 @@
     if (r && r.ok) { toast("Password updated"); $("curPass").value = ""; $("newPass").value = ""; } else ack(r);
   });
 
+  /* ---------------- telegram connect method (phone / string session) ---------------- */
+  function connMethod(m) { $("methodPhone").hidden = m !== "phone"; $("methodString").hidden = m !== "string"; }
+  document.querySelectorAll('input[name="connMethod"]').forEach((r) => r.addEventListener("change", () => connMethod(r.value)));
+  $("ssConnectBtn").addEventListener("click", async () => {
+    const api_id = $("ssApiId").value.trim(), api_hash = $("ssApiHash").value.trim(), string_session = $("ssSession").value.trim();
+    if (!api_id || !api_hash || !string_session) return loginNote("Fill API ID, API hash and string session.", "err");
+    loginNote("Connecting…", "");
+    const r = await api("/api/tg/string", { csrf: CSRF, api_id, api_hash, string_session });
+    if (r && r.ok && r.next === "done") { loginNote("Connected!", "ok"); toast("Telegram connected"); $("ssSession").value = ""; poll(); }
+    else loginNote((r && r.error) || "Could not connect.", "err");
+  });
+
+  /* ---------------- Groups page ---------------- */
+  async function loadGroupsPage() {
+    const st = await api("/api/status"); const cur = st && st.group ? st.group.id : null;
+    const t = $("grpTarget"); t.hidden = !(st && st.group);
+    if (st && st.group) { t.textContent = ""; const b = document.createElement("b"); b.textContent = st.group.name; t.append("Active target: ", b, ` (${st.group.id})`); }
+    const r = await api("/api/groups"); const ul = $("grpList"); ul.innerHTML = "";
+    if (!r || !r.ok) { const li = document.createElement("li"); li.className = "muted small"; li.textContent = r && r.error ? r.error : "Connect Telegram, then load groups."; ul.appendChild(li); return; }
+    if (!r.groups.length) { const li = document.createElement("li"); li.className = "muted small"; li.textContent = "No groups found."; ul.appendChild(li); return; }
+    r.groups.forEach((g) => {
+      const li = document.createElement("li"); li.className = "grp-item" + (g.id === cur ? " active" : "");
+      const av = document.createElement("span"); av.className = "grp-av"; av.textContent = (g.name || "?")[0].toUpperCase();
+      const info = document.createElement("div"); info.className = "grp-info";
+      const nm = document.createElement("div"); nm.className = "grp-nm"; nm.textContent = g.name;
+      const id = document.createElement("div"); id.className = "grp-id"; id.textContent = g.id;
+      info.append(nm, id);
+      const btn = document.createElement("button"); btn.className = "btn small-btn" + (g.id === cur ? "" : " btn-primary"); btn.textContent = g.id === cur ? "Active" : "Set target"; btn.disabled = g.id === cur;
+      btn.addEventListener("click", async () => { ack(await api("/api/select_group", { csrf: CSRF, id: g.id, name: g.name }), "Target set"); loadGroupsPage(); poll(); });
+      li.append(av, info, btn); ul.appendChild(li);
+    });
+  }
+  $("grpLoadBtn").addEventListener("click", loadGroupsPage);
+
+  /* ---------------- History / Replay ---------------- */
+  async function loadHistory() {
+    const r = await api("/api/history"); const ul = $("histList"); ul.innerHTML = "";
+    if (!r || !r.games || !r.games.length) { const li = document.createElement("li"); li.className = "muted small"; li.textContent = "No completed games yet."; ul.appendChild(li); return; }
+    r.games.forEach((g) => {
+      const li = document.createElement("li"); li.className = "hist-game";
+      const badge = document.createElement("span"); badge.className = "badge " + (g.result === "won" ? "on" : "off"); badge.textContent = g.result === "won" ? "WON" : "LOST";
+      const word = document.createElement("b"); word.className = "hist-word"; word.textContent = (g.answer || "—").toUpperCase();
+      const meta = document.createElement("span"); meta.className = "muted small"; meta.textContent = `${g.mode}L · ${g.guesses} guesses · ${g.seconds ? g.seconds.toFixed(1) + "s" : "—"} · ${dt(g.created_at)}`;
+      const view = document.createElement("button"); view.className = "btn small-btn"; view.textContent = "Replay";
+      view.addEventListener("click", () => openReplay(g.id));
+      li.append(badge, word, meta, view); ul.appendChild(li);
+    });
+  }
+  async function openReplay(gid) {
+    const g = await api(`/api/history/${gid}`); if (!g || g.error) return toast("Not found", "error");
+    const body = $("replayBody"); body.innerHTML = "";
+    $("replayTitle").textContent = `${(g.answer || "").toUpperCase()} · ${g.result === "won" ? "Won" : "Lost"}`;
+    const meta = document.createElement("p"); meta.className = "muted small"; meta.textContent = `${g.mode}-letter · ${g.guesses} guesses · ${g.seconds ? g.seconds.toFixed(1) + "s" : "—"} · ${dt(g.created_at)}`;
+    const gl = document.createElement("div"); gl.className = "replay-guesses";
+    (g.guess_list || []).forEach((w, i) => { const c = document.createElement("span"); c.className = "chip"; const rk = document.createElement("span"); rk.className = "rk"; rk.textContent = "#" + (i + 1); c.append(rk, document.createTextNode(w)); gl.appendChild(c); });
+    const bl = document.createElement("label"); bl.className = "fld-label"; bl.textContent = "Final board";
+    const pre = document.createElement("pre"); pre.className = "board-view"; pre.textContent = g.board || "—";
+    body.append(meta, bl, pre, document.createElement("br")); const gll = document.createElement("label"); gll.className = "fld-label"; gll.textContent = "Our guesses"; body.append(gll, gl);
+    $("replayModal").hidden = false;
+  }
+  $("histRefresh").addEventListener("click", loadHistory);
+  $("replayModal").addEventListener("click", (e) => { if (e.target.hasAttribute("data-close")) $("replayModal").hidden = true; });
+
+  /* ---------------- Statistics ---------------- */
+  async function loadStats() {
+    const s = await api("/api/stats"); if (!s) return;
+    const tiles = [["Games", s.games], ["Wins", s.wins], ["Losses", s.losses], ["Win rate", s.win_rate + "%"],
+      ["Current streak", s.current_streak], ["Longest streak", s.longest_streak],
+      ["Avg guesses", s.avg_guesses], ["Avg solve", s.avg_solve_time + "s"], ["Fastest", s.fastest_solve + "s"]];
+    const box = $("statTiles"); box.innerHTML = "";
+    tiles.forEach(([label, val]) => { const d = document.createElement("div"); d.className = "stat-tile card"; const b = document.createElement("b"); b.textContent = val; const sm = document.createElement("small"); sm.textContent = label; d.append(b, sm); box.appendChild(d); });
+    // SVG bar chart
+    const series = s.series || []; const max = Math.max(1, ...series.map((d) => d.games));
+    const W = 100, H = 40, n = series.length, bw = W / n;
+    let bars = "";
+    series.forEach((d, i) => {
+      const gh = (d.games / max) * H, wh = (d.wins / max) * H, x = i * bw;
+      bars += `<rect x="${(x + bw * 0.12).toFixed(2)}" y="${(H - gh).toFixed(2)}" width="${(bw * 0.76).toFixed(2)}" height="${gh.toFixed(2)}" rx="0.6" fill="rgba(167,139,250,.25)"></rect>`;
+      bars += `<rect x="${(x + bw * 0.12).toFixed(2)}" y="${(H - wh).toFixed(2)}" width="${(bw * 0.76).toFixed(2)}" height="${wh.toFixed(2)}" rx="0.6" fill="url(#gg)"></rect>`;
+    });
+    $("statChart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="chart-svg"><defs><linearGradient id="gg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7cc7ff"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs>${bars}</svg>`;
+  }
+
+  /* ---------------- Logs (searchable) ---------------- */
+  async function loadLogs() {
+    const cat = $("logCategory").value, q = $("logSearch").value.trim();
+    const qs = new URLSearchParams(); if (cat) qs.set("category", cat); if (q) qs.set("q", q);
+    const r = await api("/api/logs?" + qs.toString()); const ul = $("logList"); ul.innerHTML = "";
+    if (!r || !r.logs || !r.logs.length) { const li = document.createElement("li"); li.className = "empty"; li.textContent = "No logs match."; ul.appendChild(li); return; }
+    r.logs.forEach((e) => {
+      const li = document.createElement("li"); li.className = "log-row";
+      const t = document.createElement("span"); t.className = "t"; t.textContent = dt(e.ts);
+      const cat = document.createElement("span"); cat.className = "logcat cat-" + e.category; cat.textContent = e.category;
+      const m = document.createElement("span"); m.className = "m"; m.textContent = e.text;
+      li.append(t, cat, m); ul.appendChild(li);
+    });
+  }
+  $("logRefresh").addEventListener("click", loadLogs);
+  $("logCategory").addEventListener("change", loadLogs);
+  $("logSearch").addEventListener("keydown", (e) => { if (e.key === "Enter") loadLogs(); });
+
+  /* ---------------- Themes + preferences ---------------- */
+  const THEMES = ["cute", "dark", "glass", "purple", "blue", "cyber", "minimal"];
+  function applyTheme(name) { document.documentElement.dataset.theme = THEMES.includes(name) ? name : "cute"; }
+  function applyAnim(speed) { document.documentElement.dataset.anim = ["off", "slow", "normal", "fast"].includes(speed) ? speed : "normal"; }
+  function beep(kind) {
+    const ctx = beep._c || (beep._c = new (window.AudioContext || window.webkitAudioContext)());
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = kind === "error" ? 220 : kind === "info" ? 520 : 660;
+    o.connect(g); g.connect(ctx.destination); g.gain.value = 0.04;
+    o.start(); g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18); o.stop(ctx.currentTime + 0.19);
+  }
+  function renderSwatches(active) {
+    const box = $("themeSwatches"); box.innerHTML = "";
+    THEMES.forEach((t) => {
+      const b = document.createElement("button"); b.className = "swatch t-" + t + (t === active ? " active" : ""); b.type = "button"; b.title = t;
+      const lbl = document.createElement("span"); lbl.textContent = t; b.appendChild(lbl);
+      b.addEventListener("click", async () => { applyTheme(t); localStorage.setItem("ws.theme", t); renderSwatches(t); await api("/api/prefs", { csrf: CSRF, theme: t }); toast("Theme: " + t, "info"); });
+      box.appendChild(b);
+    });
+  }
+  async function loadPrefs() {
+    const p = await api("/api/prefs"); if (!p) return;
+    applyTheme(p.theme); applyAnim(p.anim_speed); SOUND = !!p.sound;
+    localStorage.setItem("ws.theme", p.theme);
+    renderSwatches(p.theme);
+    $("animSpeed").value = p.anim_speed || "normal";
+    $("soundToggle").checked = !!p.sound;
+  }
+  $("animSpeed").addEventListener("change", async () => { applyAnim($("animSpeed").value); ack(await api("/api/prefs", { csrf: CSRF, anim_speed: $("animSpeed").value }), "Saved"); });
+  $("soundToggle").addEventListener("change", async () => { SOUND = $("soundToggle").checked; await api("/api/prefs", { csrf: CSRF, sound: SOUND }); if (SOUND) toast("Sound on", "info"); });
+
   /* ---------------- boot ---------------- */
-  showStep("phone");
+  applyTheme(localStorage.getItem("ws.theme") || "cute");   // instant, before network
+  showStep("phone"); connMethod("phone");
+  loadPrefs();
   const start = (location.hash || "").replace("#", "");
   go(titles[start] ? start : "dashboard");
   poll();

@@ -38,9 +38,10 @@ def event_of(text: str):
 
 
 class Automation:
-    def __init__(self, send, get_messages, get_settings, get_rules, engine, log, loop, now=None):
+    def __init__(self, send, get_messages, get_settings, get_rules, engine, log, loop, now=None, get_weighted=None):
         self.send = send                 # async (text) -> dict {ok,...}
         self.get_messages = get_messages  # () -> [str]
+        self.get_weighted = get_weighted or (lambda: [(t, 1) for t in get_messages()])  # () -> [(text, weight)]
         self.get_settings = get_settings  # () -> dict (message settings)
         self.get_rules = get_rules        # () -> [rule dict]
         self.engine = engine
@@ -83,9 +84,12 @@ class Automation:
         if not msgs:
             return
         count = max(1, min(int(s.get("max_messages", 1)), len(msgs)))
-        if s.get("mode") == "sequential":
+        mode = s.get("mode")
+        if mode == "sequential":
             chosen = [msgs[(self._seq + i) % len(msgs)] for i in range(count)]
             self._seq = (self._seq + count) % len(msgs)
+        elif mode == "weighted":
+            chosen = self._weighted_pick(self.get_weighted() or [], count)
         else:
             chosen = self._rand.sample(msgs, count)
 
@@ -98,6 +102,22 @@ class Automation:
                 self.log("automation", f"Sent message: {m}")
             elif res.get("flood_wait"):
                 await asyncio.sleep(min(int(res["flood_wait"]), 30))
+
+    def _weighted_pick(self, pairs, count):
+        """Weighted random selection without replacement."""
+        pool = [(t, max(1, int(w))) for t, w in pairs if t]
+        out = []
+        for _ in range(min(count, len(pool))):
+            total = sum(w for _, w in pool)
+            r = self._rand.uniform(0, total)
+            acc = 0
+            for i, (t, w) in enumerate(pool):
+                acc += w
+                if r <= acc:
+                    out.append(t)
+                    pool.pop(i)
+                    break
+        return out
 
     async def _rules(self, event):
         for rule in self.get_rules() or []:
@@ -119,9 +139,13 @@ class Automation:
             elif t == "send_message":
                 msgs = self.get_messages() or []
                 if msgs:
-                    if act.get("mode") == "sequential":
+                    mode = act.get("mode")
+                    if mode == "sequential":
                         m = msgs[self._seq % len(msgs)]
                         self._seq += 1
+                    elif mode == "weighted":
+                        picks = self._weighted_pick(self.get_weighted() or [], 1)
+                        m = picks[0] if picks else self._rand.choice(msgs)
                     else:
                         m = self._rand.choice(msgs)
                     await self.send(m)

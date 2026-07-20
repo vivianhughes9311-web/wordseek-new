@@ -55,7 +55,8 @@ def _connect():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             position INTEGER NOT NULL DEFAULT 0,
-            text TEXT NOT NULL
+            text TEXT NOT NULL,
+            weight INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE IF NOT EXISTS rules(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,8 +71,32 @@ def _connect():
             user_id INTEGER PRIMARY KEY,
             data TEXT NOT NULL DEFAULT '{}'
         );
+        CREATE TABLE IF NOT EXISTS prefs(
+            user_id INTEGER PRIMARY KEY,
+            data TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS games(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            created_at REAL,
+            group_name TEXT, mode INTEGER, result TEXT,
+            guesses INTEGER, seconds REAL, answer TEXT,
+            board TEXT, guess_list TEXT
+        );
+        CREATE TABLE IF NOT EXISTS logs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            ts REAL, category TEXT, text TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_games_user ON games(user_id, id);
+        CREATE INDEX IF NOT EXISTS idx_logs_user ON logs(user_id, id);
         """
     )
+    # migrations for existing databases (ignore if the column already exists)
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN weight INTEGER NOT NULL DEFAULT 1")
+    except Exception:
+        pass
     conn.commit()
     return conn
 
@@ -182,10 +207,9 @@ def set_disabled(user_id: int, disabled: bool):
 
 def delete_user(user_id: int):
     with _lock:
-        conn().execute("DELETE FROM users WHERE id=?", (user_id,))
-        conn().execute("DELETE FROM messages WHERE user_id=?", (user_id,))
-        conn().execute("DELETE FROM rules WHERE user_id=?", (user_id,))
-        conn().execute("DELETE FROM settings WHERE user_id=?", (user_id,))
+        for tbl in ("users", "messages", "rules", "settings", "prefs", "games", "logs"):
+            col = "id" if tbl == "users" else "user_id"
+            conn().execute(f"DELETE FROM {tbl} WHERE {col}=?", (user_id,))
         conn().commit()
     return {"ok": True}
 
@@ -208,12 +232,28 @@ def touch_seen(user_id: int):
 # --------------------------------------------------------------------------- #
 def list_messages(user_id: int) -> list:
     with _lock:
-        rows = conn().execute("SELECT id, text FROM messages WHERE user_id=? ORDER BY position, id", (user_id,)).fetchall()
-        return [{"id": r["id"], "text": r["text"]} for r in rows]
+        rows = conn().execute("SELECT id, text, weight FROM messages WHERE user_id=? ORDER BY position, id", (user_id,)).fetchall()
+        return [{"id": r["id"], "text": r["text"], "weight": r["weight"] or 1} for r in rows]
 
 
 def message_texts(user_id: int) -> list:
     return [m["text"] for m in list_messages(user_id)]
+
+
+def message_weighted(user_id: int) -> list:
+    return [(m["text"], max(1, int(m["weight"] or 1))) for m in list_messages(user_id)]
+
+
+def duplicate_message(user_id: int, mid: int):
+    with _lock:
+        row = conn().execute("SELECT text, weight FROM messages WHERE id=? AND user_id=?", (mid, user_id)).fetchone()
+        if not row:
+            return {"ok": False, "error": "Message not found."}
+        pos = conn().execute("SELECT COALESCE(MAX(position), -1)+1 p FROM messages WHERE user_id=?", (user_id,)).fetchone()["p"]
+        conn().execute("INSERT INTO messages(user_id, position, text, weight) VALUES(?,?,?,?)",
+                       (user_id, pos, row["text"], row["weight"] or 1))
+        conn().commit()
+    return {"ok": True}
 
 
 def add_message(user_id: int, text: str):
@@ -229,12 +269,16 @@ def add_message(user_id: int, text: str):
         return {"ok": True, "id": cur.lastrowid}
 
 
-def update_message(user_id: int, mid: int, text: str):
-    text = (text or "").strip()
-    if not text:
-        return {"ok": False, "error": "Message is empty."}
+def update_message(user_id: int, mid: int, text: str = None, weight: int = None):
     with _lock:
-        conn().execute("UPDATE messages SET text=? WHERE id=? AND user_id=?", (text[:300], mid, user_id))
+        if text is not None:
+            text = (text or "").strip()
+            if not text:
+                return {"ok": False, "error": "Message is empty."}
+            conn().execute("UPDATE messages SET text=? WHERE id=? AND user_id=?", (text[:300], mid, user_id))
+        if weight is not None:
+            w = max(1, min(20, int(weight)))
+            conn().execute("UPDATE messages SET weight=? WHERE id=? AND user_id=?", (w, mid, user_id))
         conn().commit()
     return {"ok": True}
 
@@ -286,7 +330,7 @@ def save_msg_settings(user_id: int, patch: dict) -> dict:
     for k in DEFAULT_MSG_SETTINGS:
         if k in patch:
             current[k] = patch[k]
-    current["mode"] = "sequential" if current.get("mode") == "sequential" else "random"
+    current["mode"] = current.get("mode") if current.get("mode") in ("random", "sequential", "weighted") else "random"
     current["delay_ms"] = max(0, min(20000, int(current.get("delay_ms", 800) or 0)))
     current["max_messages"] = max(1, min(10, int(current.get("max_messages", 1) or 1)))
     for b in ("enabled", "on_new_game", "after_every_game", "only_wins", "only_losses"):
@@ -379,3 +423,183 @@ def reorder_rules(user_id: int, ids: list):
             conn().execute("UPDATE rules SET position=? WHERE id=? AND user_id=?", (pos, int(rid), user_id))
         conn().commit()
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# dashboard preferences (theme, animation, sound, etc.)
+# --------------------------------------------------------------------------- #
+DEFAULT_PREFS = {
+    "theme": "cute",
+    "anim_speed": "normal",     # off | slow | normal | fast
+    "sound": True,
+    "default_group": None,
+}
+
+
+def get_prefs(user_id: int) -> dict:
+    with _lock:
+        row = conn().execute("SELECT data FROM prefs WHERE user_id=?", (user_id,)).fetchone()
+    data = {}
+    if row:
+        try:
+            data = json.loads(row["data"])
+        except Exception:
+            data = {}
+    merged = dict(DEFAULT_PREFS)
+    merged.update({k: v for k, v in data.items() if k in DEFAULT_PREFS})
+    return merged
+
+
+def save_prefs(user_id: int, patch: dict) -> dict:
+    cur = get_prefs(user_id)
+    for k in DEFAULT_PREFS:
+        if k in patch:
+            cur[k] = patch[k]
+    cur["theme"] = str(cur.get("theme") or "cute")[:20]
+    if cur.get("anim_speed") not in ("off", "slow", "normal", "fast"):
+        cur["anim_speed"] = "normal"
+    cur["sound"] = bool(cur.get("sound"))
+    with _lock:
+        conn().execute("INSERT INTO prefs(user_id, data) VALUES(?,?) "
+                       "ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",
+                       (user_id, json.dumps(cur)))
+        conn().commit()
+    return cur
+
+
+# --------------------------------------------------------------------------- #
+# games (history / replay + statistics source)
+# --------------------------------------------------------------------------- #
+def record_game(user_id, group_name, mode, result, guesses, seconds, answer, board, guess_list):
+    with _lock:
+        conn().execute(
+            "INSERT INTO games(user_id, created_at, group_name, mode, result, guesses, seconds, answer, board, guess_list) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (user_id, time.time(), (group_name or "")[:80], int(mode or 0),
+             ("won" if result == "won" else "lost"), int(guesses or 0),
+             float(seconds or 0), (answer or "")[:24],
+             (board or "")[:2000], json.dumps(guess_list or [])[:2000]),
+        )
+        # keep at most 500 games per user
+        conn().execute(
+            "DELETE FROM games WHERE user_id=? AND id NOT IN "
+            "(SELECT id FROM games WHERE user_id=? ORDER BY id DESC LIMIT 500)",
+            (user_id, user_id))
+        conn().commit()
+
+
+def list_games(user_id: int, limit: int = 50, offset: int = 0) -> list:
+    with _lock:
+        rows = conn().execute("SELECT id, created_at, group_name, mode, result, guesses, seconds, answer "
+                              "FROM games WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+                              (user_id, limit, offset)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_game(user_id: int, gid: int):
+    with _lock:
+        row = conn().execute("SELECT * FROM games WHERE id=? AND user_id=?", (gid, user_id)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["guess_list"] = json.loads(d.get("guess_list") or "[]")
+    except Exception:
+        d["guess_list"] = []
+    return d
+
+
+def compute_stats(user_id: int) -> dict:
+    with _lock:
+        rows = conn().execute("SELECT created_at, result, guesses, seconds FROM games WHERE user_id=? ORDER BY id",
+                              (user_id,)).fetchall()
+    games = len(rows)
+    wins = sum(1 for r in rows if r["result"] == "won")
+    losses = games - wins
+    win_guesses = [r["guesses"] for r in rows if r["result"] == "won" and r["guesses"]]
+    win_secs = [r["seconds"] for r in rows if r["result"] == "won" and r["seconds"]]
+
+    # streaks (based on chronological win/loss)
+    cur_streak = longest = run = 0
+    for r in rows:
+        if r["result"] == "won":
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    # current streak = trailing wins
+    for r in reversed(rows):
+        if r["result"] == "won":
+            cur_streak += 1
+        else:
+            break
+
+    # daily series (last 14 days)
+    import time as _t
+    day = 86400
+    now = _t.time()
+    start = now - 13 * day
+    buckets = {}
+    for r in rows:
+        if not r["created_at"] or r["created_at"] < start - day:
+            continue
+        d = int((r["created_at"]) // day)
+        b = buckets.setdefault(d, {"games": 0, "wins": 0})
+        b["games"] += 1
+        if r["result"] == "won":
+            b["wins"] += 1
+    series = []
+    base_day = int(start // day)
+    for i in range(14):
+        d = base_day + i
+        b = buckets.get(d, {"games": 0, "wins": 0})
+        series.append({"day": d * day, "games": b["games"], "wins": b["wins"]})
+
+    def avg(xs):
+        return round(sum(xs) / len(xs), 2) if xs else 0
+
+    return {
+        "games": games, "wins": wins, "losses": losses,
+        "win_rate": round(100 * wins / games) if games else 0,
+        "current_streak": cur_streak, "longest_streak": longest,
+        "avg_guesses": avg(win_guesses),
+        "avg_solve_time": avg(win_secs),
+        "fastest_solve": round(min(win_secs), 2) if win_secs else 0,
+        "series": series,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# logs (searchable)
+# --------------------------------------------------------------------------- #
+LOG_CATEGORIES = ("login", "telegram", "guess", "autoplay", "automation", "settings", "warning", "error", "system")
+
+
+def add_log(user_id, category, text):
+    if not user_id:
+        return
+    cat = category if category in LOG_CATEGORIES else "system"
+    with _lock:
+        conn().execute("INSERT INTO logs(user_id, ts, category, text) VALUES(?,?,?,?)",
+                       (user_id, time.time(), cat, str(text)[:280]))
+        conn().execute(
+            "DELETE FROM logs WHERE user_id=? AND id NOT IN "
+            "(SELECT id FROM logs WHERE user_id=? ORDER BY id DESC LIMIT 1000)",
+            (user_id, user_id))
+        conn().commit()
+
+
+def list_logs(user_id: int, category: str = None, query: str = None, limit: int = 200) -> list:
+    sql = "SELECT ts, category, text FROM logs WHERE user_id=?"
+    args = [user_id]
+    if category and category in LOG_CATEGORIES:
+        sql += " AND category=?"
+        args.append(category)
+    if query:
+        sql += " AND text LIKE ?"
+        args.append(f"%{query[:60]}%")
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(max(1, min(500, limit)))
+    with _lock:
+        rows = conn().execute(sql, args).fetchall()
+        return [dict(r) for r in rows]

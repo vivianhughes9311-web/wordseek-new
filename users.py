@@ -39,6 +39,8 @@ DEFAULT_USER = {
     "account_name": None,
     "phone_masked": None,
     "session_enc": None,
+    "api_id": None,          # set only for string-session logins (own credentials)
+    "api_hash_enc": None,
     "group_id": None,
     "group_name": None,
     "auto_send": False,

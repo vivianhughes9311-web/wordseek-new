@@ -128,6 +128,7 @@ def login():
                 row = db.get_user(res["id"])
                 sid = security.login_session(row, remember)
                 db.touch_login(row["id"], sid)
+                db.add_log(row["id"], "login", "Signed in")
                 return redirect(url_for("dashboard"))
         else:
             row = db.verify_login(username, password)
@@ -138,6 +139,7 @@ def login():
             else:
                 sid = security.login_session(row, remember)
                 db.touch_login(row["id"], sid)
+                db.add_log(row["id"], "login", "Signed in")
                 nxt = request.args.get("next", "")
                 return redirect(nxt if nxt.startswith("/") else url_for("dashboard"))
 
@@ -329,7 +331,17 @@ def api_messages_add():
 @rate_limit(max_calls=60, per_seconds=30)
 def api_messages_update():
     d = request.get_json(silent=True) or {}
-    return jsonify(db.update_message(current_login_id(), int(d.get("id", 0)), d.get("text")))
+    return jsonify(db.update_message(current_login_id(), int(d.get("id", 0)),
+                                     text=d.get("text"), weight=d.get("weight")))
+
+
+@app.post("/api/messages/duplicate")
+@login_required
+@csrf_protect
+@rate_limit(max_calls=60, per_seconds=30)
+def api_messages_duplicate():
+    d = request.get_json(silent=True) or {}
+    return jsonify(db.duplicate_message(current_login_id(), int(d.get("id", 0))))
 
 
 @app.post("/api/messages/delete")
@@ -416,6 +428,71 @@ def api_rules_delete():
 def api_rules_reorder():
     d = request.get_json(silent=True) or {}
     return jsonify(db.reorder_rules(current_login_id(), d.get("ids", [])))
+
+
+# ----------------------------------------------------------------------------
+# Statistics / History / Logs / Preferences
+# ----------------------------------------------------------------------------
+@app.get("/api/stats")
+@login_required
+@rate_limit(max_calls=60, per_seconds=10)
+def api_stats():
+    return jsonify(db.compute_stats(current_login_id()))
+
+
+@app.get("/api/history")
+@login_required
+@rate_limit(max_calls=60, per_seconds=10)
+def api_history():
+    offset = request.args.get("offset", 0, type=int)
+    return jsonify({"games": db.list_games(current_login_id(), 50, max(0, offset))})
+
+
+@app.get("/api/history/<int:gid>")
+@login_required
+@rate_limit(max_calls=90, per_seconds=10)
+def api_history_get(gid):
+    g = db.get_game(current_login_id(), gid)
+    return (jsonify(g), 200) if g else (jsonify({"error": "Not found"}), 404)
+
+
+@app.get("/api/logs")
+@login_required
+@rate_limit(max_calls=60, per_seconds=10)
+def api_logs():
+    return jsonify({"logs": db.list_logs(current_login_id(),
+                                         request.args.get("category"),
+                                         request.args.get("q"))})
+
+
+@app.get("/api/prefs")
+@login_required
+@rate_limit(max_calls=60, per_seconds=10)
+def api_prefs_get():
+    return jsonify(db.get_prefs(current_login_id()))
+
+
+@app.post("/api/prefs")
+@login_required
+@csrf_protect
+@rate_limit(max_calls=40, per_seconds=30)
+def api_prefs_save():
+    d = request.get_json(silent=True) or {}
+    d.pop("csrf", None)
+    prefs = db.save_prefs(current_login_id(), d)
+    db.add_log(current_login_id(), "settings", "Updated dashboard preferences")
+    return jsonify({"ok": True, "prefs": prefs})
+
+
+@app.post("/api/tg/string")
+@login_required
+@csrf_protect
+@rate_limit(max_calls=8, per_seconds=60)
+def api_tg_string():
+    if (g := _need_service()):
+        return g
+    d = request.get_json(silent=True) or {}
+    return jsonify(service.login_string(current_uid(), d.get("api_id"), d.get("api_hash"), d.get("string_session")))
 
 
 # ----------------------------------------------------------------------------
